@@ -47,20 +47,22 @@ def load_configs() -> list:
 
 def _fetch_and_backtest(cfg: dict, start_date: str, end_date: str, capital: float) -> dict:
     """
-    Laedt OHLCV-Daten, berechnet Fibonacci-Range und fuehrt den Backtest durch.
-    Gibt Backtest-Ergebnis + Fibonacci-Info zurueck oder {'error': ...}.
+    Laedt OHLCV-Daten und simuliert den Grid mit dynamischem Fibonacci-Rebalancing —
+    identisch zum Live-Bot und zu Mode 4 (interaktive Charts).
     """
-    from gbot.analysis.fibonacci import fetch_ohlcv_public, auto_fib_analysis
-    from gbot.analysis.backtester import run_grid_backtest
+    from gbot.analysis.fibonacci import fetch_ohlcv_public
+    from gbot.analysis.interactive_charts import simulate_dynamic_grid
 
     sym = cfg['market']['symbol']
     fib_cfg = cfg['grid'].get('fibonacci', {})
     tf = fib_cfg.get('timeframe', '4h')
-    lookback_fib = fib_cfg.get('lookback', 200)
     num_grids = cfg['grid']['num_grids']
     leverage = cfg['risk'].get('leverage', 1)
+    lookback_fib = fib_cfg.get('lookback', 200)
+    swing_window = fib_cfg.get('swing_window', 10)
+    prefer_golden = fib_cfg.get('prefer_golden_zone', False)
+    min_rebalance_h = fib_cfg.get('min_rebalance_interval_hours', 4)
 
-    # OHLCV fuer Backtest-Zeitraum laden
     try:
         from gbot.analysis.optimizer import LOOKBACK_BY_TF, DEFAULT_LOOKBACK
         lookback_full = LOOKBACK_BY_TF.get(tf, DEFAULT_LOOKBACK)
@@ -72,40 +74,50 @@ def _fetch_and_backtest(cfg: dict, start_date: str, end_date: str, capital: floa
     except Exception as e:
         return {'error': f'Datenabruf fehlgeschlagen: {e}'}
 
-    # Fibonacci-Range aus aktuellen Daten
     try:
-        analysis = auto_fib_analysis(
-            symbol=sym,
-            timeframe=tf,
-            lookback=lookback_fib,
-            swing_window=fib_cfg.get('swing_window', 10),
-            prefer_golden_zone=fib_cfg.get('prefer_golden_zone', False),
+        grid_epochs, pnl_df, fills_df = simulate_dynamic_grid(
+            df=df,
+            num_grids=num_grids,
+            leverage=leverage,
+            capital=capital,
+            lookback_fib=lookback_fib,
+            swing_window=swing_window,
+            prefer_golden_zone=prefer_golden,
+            min_rebalance_hours=min_rebalance_h,
         )
-        lower = analysis['suggested_range']['lower_price']
-        upper = analysis['suggested_range']['upper_price']
-        lower_label = analysis['suggested_range']['lower_label']
-        upper_label = analysis['suggested_range']['upper_label']
     except Exception as e:
-        return {'error': f'Fibonacci fehlgeschlagen: {e}'}
+        return {'error': f'Grid-Simulation fehlgeschlagen: {e}'}
 
-    result = run_grid_backtest(
-        df=df,
-        lower=lower,
-        upper=upper,
-        num_grids=num_grids,
-        leverage=leverage,
-        capital=capital,
-    )
+    if pnl_df.empty:
+        return {'error': 'Keine PnL-Daten generiert'}
 
-    result['symbol'] = sym
-    result['timeframe'] = tf
-    result['lower'] = lower
-    result['upper'] = upper
-    result['lower_label'] = lower_label
-    result['upper_label'] = upper_label
-    result['candles'] = len(df)
-    result['fib_analysis'] = analysis
-    return result
+    total_pnl = float(pnl_df['pnl'].iloc[-1])
+    roi_pct = total_pnl / capital * 100 if capital > 0 else 0
+    total_fills = len(fills_df) if not fills_df.empty else 0
+
+    cap_series = pnl_df['capital']
+    running_max = cap_series.cummax()
+    drawdown = (running_max - cap_series) / running_max * 100
+    max_drawdown_pct = float(drawdown.max())
+
+    first_epoch = grid_epochs[0] if grid_epochs else {}
+    return {
+        'symbol': sym,
+        'timeframe': tf,
+        'num_grids': num_grids,
+        'leverage': leverage,
+        'total_fills': total_fills,
+        'roi_pct': round(roi_pct, 2),
+        'max_drawdown_pct': round(max_drawdown_pct, 2),
+        'total_pnl_usdt': round(total_pnl, 4),
+        'lower': first_epoch.get('lower', 0),
+        'upper': first_epoch.get('upper', 0),
+        'lower_label': first_epoch.get('lower_label', 'n/a'),
+        'upper_label': first_epoch.get('upper_label', 'n/a'),
+        'candles': len(df),
+        'n_rebalancings': len(grid_epochs) - 1 if grid_epochs else 0,
+        'fib_analysis': {},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -137,10 +149,10 @@ def run_single_analysis(start_date: str, end_date: str, capital: float):
             'Grids': r['num_grids'],
             'Hebel': f"{r['leverage']}x",
             'Fills': r['total_fills'],
+            'Reb.': r.get('n_rebalancings', 0),
             'ROI %': r['roi_pct'],
             'Max DD %': r['max_drawdown_pct'],
             'PnL USDT': r['total_pnl_usdt'],
-            'Range': f"{r['lower_label']}–{r['upper_label']}",
         })
 
     if not all_results:
