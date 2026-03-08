@@ -54,7 +54,7 @@ for SYMBOL in $SYMBOLS; do
         echo -e "${BLUE}  Bearbeite: $FULL_SYMBOL ($TF)${NC}"
         echo -e "${BLUE}=======================================================${NC}"
 
-        python3 "$OPTIMIZER" \
+        PYTHONPATH="$SCRIPT_DIR/src" python3 "$OPTIMIZER" \
             --symbol   "$FULL_SYMBOL" \
             --timeframe "$TF" \
             --capital  "$CAPITAL" \
