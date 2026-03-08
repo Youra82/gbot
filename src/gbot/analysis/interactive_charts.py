@@ -279,16 +279,14 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
         showlegend=True,
     ), secondary_y=False)
 
-    # ===== GRID-EPOCHEN: Fibonacci-Baender + Grid-Levels pro Zeitraum =====
-    epoch_colors = [
-        ('#1d4ed8', 'rgba(37,99,235,0.10)'),   # blau
-        ('#7c3aed', 'rgba(124,58,237,0.10)'),   # lila
-        ('#0891b2', 'rgba(8,145,178,0.10)'),    # cyan
-        ('#059669', 'rgba(5,150,105,0.10)'),    # gruen
-        ('#d97706', 'rgba(217,119,6,0.10)'),    # orange
+    # ===== GRID-EPOCHEN =====
+    # Performance: statt tausende add_shape()-Aufrufe → Scatter-Traces mit None-Trennern
+    epoch_color_lines = ['#1d4ed8', '#7c3aed', '#0891b2', '#059669', '#d97706']
+    epoch_color_fills = [
+        'rgba(37,99,235,0.10)', 'rgba(124,58,237,0.10)',
+        'rgba(8,145,178,0.10)', 'rgba(5,150,105,0.10)', 'rgba(217,119,6,0.10)',
     ]
 
-    # Filter: nur Epochen die im sichtbaren Zeitraum liegen
     visible_start = df.index.min()
     visible_end   = df.index.max()
 
@@ -299,66 +297,104 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
            pd.Timestamp(e['start_ts']) <= visible_end
     ]
 
+    logger.info(f"  {len(shown_epochs)} sichtbare Epochen werden gerendert...")
+
+    # Epochen pro Farbe in je einen Scatter-Fill-Trace bündeln (5 Traces statt N shapes)
+    fill_xs = [[] for _ in range(5)]
+    fill_ys = [[] for _ in range(5)]
+    # Innere Grid-Linien: 1 Scatter-Trace (dashed, alle Epochen zusammen)
+    inner_xs: list = []
+    inner_ys: list = []
+    # Rand-Linien: 1 Scatter-Trace (solid)
+    border_xs: list = []
+    border_ys: list = []
+
     rebalance_x = []
     rebalance_y = []
+    annotations = []
+
+    total_duration = (visible_end - visible_start).total_seconds()
 
     for idx, epoch in enumerate(shown_epochs):
-        color_line, color_fill = epoch_colors[idx % len(epoch_colors)]
+        ci = idx % 5
         x0 = max(pd.Timestamp(epoch['start_ts']), visible_start)
         x1 = min(pd.Timestamp(epoch['end_ts']), visible_end)
         lower = epoch['lower']
         upper = epoch['upper']
         spacing = epoch['spacing']
 
-        # Grid-Bereich als farbiges Band
-        fig.add_shape(
-            type='rect', x0=x0, x1=x1, y0=lower, y1=upper,
-            fillcolor=color_fill,
-            line=dict(color=color_line, width=1.5),
-            layer='below',
-        )
+        # Gefülltes Rechteck als Scatter-Polygon (x0,y0 → x1,y0 → x1,y1 → x0,y1 → x0,y0)
+        fill_xs[ci].extend([x0, x1, x1, x0, x0, None])
+        fill_ys[ci].extend([lower, lower, upper, upper, lower, None])
 
-        # Grid-Levels als gestrichelte Linien
-        for j in range(num_grids + 1):
-            gp = lower + j * spacing
-            is_boundary = (j == 0 or j == num_grids)
-            fig.add_shape(
-                type='line', x0=x0, x1=x1, y0=gp, y1=gp,
-                line=dict(color=color_line,
-                          width=1.5 if is_boundary else 0.6,
-                          dash='solid' if is_boundary else 'dash'),
-                layer='above',
-            )
+        # Rand-Linien (oben + unten, solid)
+        border_xs.extend([x0, x1, None, x0, x1, None])
+        border_ys.extend([lower, lower, None, upper, upper, None])
 
-        # Fibonacci-Levels als Annotations (nur sichtbar wenn Epoche lang genug)
+        # Innere Grid-Levels (nur zeichnen wenn ≤ 100 Epochen sichtbar)
+        if len(shown_epochs) <= 100:
+            for j in range(1, num_grids):
+                gp = lower + j * spacing
+                inner_xs.extend([x0, x1, None])
+                inner_ys.extend([gp, gp, None])
+
+        # Fibonacci-Label (nur für lange Epochen)
         duration = (pd.Timestamp(x1) - pd.Timestamp(x0)).total_seconds()
-        total_duration = (visible_end - visible_start).total_seconds()
         if total_duration > 0 and duration / total_duration > 0.05:
-            fig.add_annotation(
+            annotations.append(dict(
                 x=x0, y=upper,
                 text=f" {epoch['upper_label']}",
                 showarrow=False, xanchor='left',
-                font=dict(size=9, color=color_line), yref='y',
-            )
-            fig.add_annotation(
+                font=dict(size=9, color=epoch_color_lines[ci]), yref='y',
+            ))
+            annotations.append(dict(
                 x=x0, y=lower,
                 text=f" {epoch['lower_label']}",
                 showarrow=False, xanchor='left',
-                font=dict(size=9, color=color_line), yref='y',
-            )
+                font=dict(size=9, color=epoch_color_lines[ci]), yref='y',
+            ))
 
         # Rebalancing-Marker
         if idx > 0:
             rebalance_x.append(pd.Timestamp(epoch['start_ts']))
-            mid = (lower + upper) / 2
-            rebalance_y.append(mid)
+            rebalance_y.append((lower + upper) / 2)
 
-    # Rebalancing-Punkte anzeigen
+    # Gefüllte Band-Traces hinzufügen (max 5 Traces)
+    for ci in range(5):
+        if fill_xs[ci]:
+            fig.add_trace(go.Scatter(
+                x=fill_xs[ci], y=fill_ys[ci],
+                fill='toself',
+                fillcolor=epoch_color_fills[ci],
+                line=dict(color=epoch_color_lines[ci], width=0),
+                mode='lines',
+                showlegend=(ci == 0),
+                name='Grid-Zone' if ci == 0 else None,
+                hoverinfo='skip',
+            ), secondary_y=False)
+
+    # Rand-Linien (ein Trace)
+    if border_xs:
+        fig.add_trace(go.Scatter(
+            x=border_xs, y=border_ys, mode='lines',
+            line=dict(color='rgba(100,100,200,0.5)', width=1),
+            showlegend=False, hoverinfo='skip',
+        ), secondary_y=False)
+
+    # Innere Grid-Linien (ein Trace)
+    if inner_xs:
+        fig.add_trace(go.Scatter(
+            x=inner_xs, y=inner_ys, mode='lines',
+            line=dict(color='rgba(100,100,200,0.3)', width=0.5, dash='dot'),
+            showlegend=False, hoverinfo='skip',
+        ), secondary_y=False)
+
+    # Rebalancing-Punkte
     if rebalance_x:
         fig.add_trace(go.Scatter(
             x=rebalance_x, y=rebalance_y, mode='markers',
-            marker=dict(color='#f59e0b', symbol='diamond', size=10,
-                        line=dict(width=1.5, color='#92400e')),
+            marker=dict(color='#f59e0b', symbol='diamond', size=8,
+                        line=dict(width=1, color='#92400e')),
             name='Rebalancing',
             showlegend=True,
         ), secondary_y=False)
@@ -395,6 +431,7 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
         yaxis=dict(fixedrange=False),
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
         showlegend=True,
+        annotations=annotations,
     )
     fig.update_yaxes(title_text='Preis (USDT)', secondary_y=False)
     fig.update_yaxes(title_text='Kontostand (USDT)', secondary_y=True)
