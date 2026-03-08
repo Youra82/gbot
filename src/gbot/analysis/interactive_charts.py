@@ -113,6 +113,10 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
     last_rebalance_time = None
     buy_orders = set()
     sell_orders = set()
+    # open_positions: sell_level -> (buy_price, position_amount)
+    # Trackt offene Long-Positionen (Buy gefüllt, Sell noch offen)
+    # Nötig für korrekte Mark-to-Market-Berechnung und realistischen DD
+    open_positions: dict = {}
     total_pnl = 0.0
     amount = 0.0
 
@@ -211,12 +215,14 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
                     sp = _r(bp + current_spacing)
                     if sp <= _r(current_upper) + 1e-9:
                         new_sells.add(sp)
+                        open_positions[sp] = (bp, amount)  # offene Long-Position
                     fills.append({'timestamp': ts, 'price': bp, 'side': 'buy'})
 
             for sp in list(sell_orders):
                 if candle_high >= sp:
                     total_pnl += current_spacing * amount - sp * amount * fee_rate
                     sell_orders.discard(sp)
+                    open_positions.pop(sp, None)  # Position geschlossen
                     bp = _r(sp - current_spacing)
                     if bp >= _r(current_lower) - 1e-9:
                         new_buys.add(bp)
@@ -225,8 +231,12 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
             sell_orders.update(new_sells - sell_orders)
             buy_orders.update(new_buys - buy_orders)
 
-        pnl_data.append({'timestamp': ts, 'pnl': round(total_pnl, 4),
-                         'capital': round(capital + total_pnl, 4)})
+        # Mark-to-Market: unrealisierte Verluste offener Long-Positionen einrechnen
+        unrealized = sum((price - bp) * pos_amt
+                         for _sp, (bp, pos_amt) in open_positions.items())
+        pnl_data.append({'timestamp': ts,
+                         'pnl': round(total_pnl + unrealized, 4),
+                         'capital': round(capital + total_pnl + unrealized, 4)})
 
     # Letzte Epoche abschliessen
     if grid_epochs and grid_epochs[-1]['end_ts'] is None:
