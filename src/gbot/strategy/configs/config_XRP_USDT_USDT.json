@@ -1,9 +1,9 @@
 {
     "market": {
-        "symbol": "BTC/USDT:USDT"
+        "symbol": "XRP/USDT:USDT"
     },
     "grid": {
-        "num_grids": 6,
+        "num_grids": 5,
         "grid_mode": "neutral",
         "fibonacci": {
             "enabled": true,

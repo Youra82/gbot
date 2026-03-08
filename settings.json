@@ -4,6 +4,30 @@
             {
                 "symbol": "BTC/USDT:USDT",
                 "active": true
+            },
+            {
+                "symbol": "ETH/USDT:USDT",
+                "active": true
+            },
+            {
+                "symbol": "XRP/USDT:USDT",
+                "active": true
+            },
+            {
+                "symbol": "SOL/USDT:USDT",
+                "active": true
+            },
+            {
+                "symbol": "ADA/USDT:USDT",
+                "active": true
+            },
+            {
+                "symbol": "AAVE/USDT:USDT",
+                "active": true
+            },
+            {
+                "symbol": "DOGE/USDT:USDT",
+                "active": true
             }
         ]
     }
