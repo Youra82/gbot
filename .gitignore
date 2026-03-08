@@ -1,0 +1,28 @@
+# Secrets
+secret.json
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Artifacts (nicht getrackt)
+artifacts/tracker/
+artifacts/results/
+artifacts/models/
+artifacts/logs/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,10 @@
+{
+    "live_trading_settings": {
+        "active_strategies": [
+            {
+                "symbol": "BTC/USDT:USDT",
+                "active": true
+            }
+        ]
+    }
+}
