@@ -39,18 +39,40 @@ GOLDEN_ZONE = ('38.2%', '61.8%')
 # Daten holen
 # ---------------------------------------------------------------------------
 
+BATCH_SIZE = 1000   # Max Kerzen pro Bitget-API-Request
+
+
 def fetch_ohlcv_public(symbol: str, timeframe: str = '4h', lookback: int = 200) -> pd.DataFrame:
     """
     Holt OHLCV-Daten von Bitget ohne API-Key (oeffentlicher Endpoint).
+    Unterstuetzt automatische Pagination fuer lookback > 1000 Kerzen.
     """
+    import time as _time
     try:
         import ccxt
     except ImportError:
         raise ImportError("ccxt ist nicht installiert. Bitte 'pip install ccxt' ausfuehren.")
 
     exchange = ccxt.bitget({'enableRateLimit': True})
+
     try:
-        raw = exchange.fetch_ohlcv(symbol, timeframe, limit=lookback)
+        if lookback <= BATCH_SIZE:
+            raw = exchange.fetch_ohlcv(symbol, timeframe, limit=lookback)
+        else:
+            # Pagination: mehrere Batches holen
+            tf_ms = exchange.parse_timeframe(timeframe) * 1000  # Zeitfenster in Millisekunden
+            since = exchange.milliseconds() - lookback * tf_ms
+            raw = []
+            while True:
+                batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=BATCH_SIZE)
+                if not batch:
+                    break
+                raw.extend(batch)
+                if len(batch) < BATCH_SIZE:
+                    break  # letzte Seite erreicht
+                since = batch[-1][0] + tf_ms
+                _time.sleep(0.3)  # Rate-Limit einhalten
+            raw = raw[-lookback:]   # nur die letzten N Kerzen behalten
     except Exception as e:
         raise RuntimeError(f"Fehler beim Abrufen von OHLCV fuer {symbol} ({timeframe}): {e}")
 

@@ -30,13 +30,24 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..
 CONFIGS_DIR = os.path.join(PROJECT_ROOT, 'src', 'gbot', 'strategy', 'configs')
 RESULTS_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
 
-# Lookback-Kerzen pro Zeitfenster (Backtest + Fibonacci)
+# Lookback-Kerzen pro Zeitfenster — abgestimmt auf die Pipeline-Empfehlung
+# Tageszahl × Kerzen-pro-Tag = benoetigte Kerzen
+# z.B. 1d: 1095 Tage × 1 Kerze/Tag = 1095 Kerzen (Pagination wird automatisch genutzt)
 LOOKBACK_BY_TF = {
-    '1m': 500, '3m': 500, '5m': 500, '15m': 500,
-    '30m': 500, '1h': 500, '2h': 500, '4h': 500,
-    '6h': 365, '8h': 365, '12h': 365, '1d': 365,
+    '1m':  2000,   # ~1.4 Tage
+    '3m':  2000,   # ~4 Tage
+    '5m':  2000,   # ~7 Tage
+    '15m': 2000,   # ~21 Tage
+    '30m': 2000,   # ~42 Tage
+    '1h':  4380,   # ~182 Tage (6 Monate)
+    '2h':  4380,   # ~365 Tage
+    '4h':  4380,   # ~730 Tage (2 Jahre)
+    '6h':  2920,   # ~730 Tage
+    '8h':  2190,   # ~730 Tage
+    '12h': 1460,   # ~730 Tage
+    '1d':  1095,   # ~1095 Tage (3 Jahre)
 }
-DEFAULT_LOOKBACK = 500
+DEFAULT_LOOKBACK = 1095
 
 # Suchraum fuer den Optimizer
 NUM_GRIDS_MIN = 5
