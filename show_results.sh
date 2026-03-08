@@ -42,7 +42,7 @@ MODE=${MODE:-1}
 # Max Drawdown fuer Modus 3
 TARGET_MAX_DD=30
 if [ "$MODE" == "3" ]; then
-    read -p "Maximaler Drawdown pro Grid in % [Standard: 30]: " DD_INPUT
+    read -p "Maximaler Drawdown in % [Standard: 30]: " DD_INPUT
     if [[ "$DD_INPUT" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
         TARGET_MAX_DD=$DD_INPUT
     else

@@ -116,7 +116,7 @@ def run_single_analysis(start_date: str, end_date: str, capital: float):
     sep()
     print("  gbot Einzel-Analyse — jede Strategie isoliert getestet")
     sep()
-    print(f"  Zeitraum: {start_date} bis {end_date} | Kapital: {capital} USDT\n")
+    print(f"  Zeitraum: {start_date} bis {end_date} | Gesamtkapital: {capital} USDT\n")
 
     configs = load_configs()
     if not configs:
@@ -187,7 +187,7 @@ def run_manual_portfolio(start_date: str, end_date: str, capital: float):
             print("  Ungueltige Auswahl.")
             return
 
-    print(f"\n  Zeitraum: {start_date} bis {end_date} | Kapital pro Grid: {capital} USDT\n")
+    print(f"\n  Zeitraum: {start_date} bis {end_date} | Gesamtkapital: {capital} USDT\n")
 
     results = []
     total_capital = capital * len(selected)
@@ -237,7 +237,7 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
     print("  gbot Automatische Portfolio-Optimierung")
     sep()
     print(f"  Ziel: Maximaler ROI bei maximal {target_max_dd:.1f}% Drawdown pro Grid.")
-    print(f"  Zeitraum: {start_date} bis {end_date} | Kapital pro Grid: {capital} USDT\n")
+    print(f"  Zeitraum: {start_date} bis {end_date} | Gesamtkapital: {capital} USDT\n")
 
     configs = load_configs()
     if not configs:
@@ -475,7 +475,7 @@ def main():
     end_date = args.end_date or input(f"  Enddatum   (JJJJ-MM-TT) [Standard: Heute]:      ").strip() or date.today().strftime("%Y-%m-%d")
     cap_input = args.capital
     if cap_input is None:
-        raw = input("  Kapital pro Grid in USDT       [Standard: 100]:   ").strip()
+        raw = input("  Gesamtkapital in USDT          [Standard: 100]:   ").strip()
         cap_input = float(raw) if raw else 100.0
 
     print()
