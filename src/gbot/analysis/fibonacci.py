@@ -41,10 +41,37 @@ GOLDEN_ZONE = ('38.2%', '61.8%')
 
 BATCH_SIZE = 1000   # Max Kerzen pro Bitget-API-Request
 
+PROJECT_ROOT_FIB = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+SECRET_PATH = os.path.join(PROJECT_ROOT_FIB, 'secret.json')
+
+
+def _make_exchange():
+    """
+    Erstellt einen ccxt.bitget Exchange.
+    Nutzt API-Key aus secret.json wenn vorhanden (mehr historische Daten),
+    faellt sonst auf oeffentlichen Endpoint zurueck.
+    """
+    import ccxt
+    opts = {'enableRateLimit': True, 'options': {'defaultType': 'swap'}}
+    if os.path.exists(SECRET_PATH):
+        try:
+            with open(SECRET_PATH, 'r') as f:
+                secrets = json.load(f)
+            api = secrets.get('gbot', [{}])[0]
+            if api.get('apiKey'):
+                opts['apiKey'] = api['apiKey']
+                opts['secret'] = api['secret']
+                opts['password'] = api.get('password', '')
+        except Exception:
+            pass
+    return ccxt.bitget(opts)
+
 
 def fetch_ohlcv_public(symbol: str, timeframe: str = '4h', lookback: int = 200) -> pd.DataFrame:
     """
-    Holt OHLCV-Daten von Bitget ohne API-Key (oeffentlicher Endpoint).
+    Holt OHLCV-Daten von Bitget.
+    Nutzt API-Key aus secret.json fuer volle historische Tiefe (wie jaegerbot).
+    Faellt auf public Endpoint zurueck wenn kein Key vorhanden.
     Unterstuetzt automatische Pagination fuer lookback > 1000 Kerzen.
     """
     import time as _time
@@ -53,18 +80,20 @@ def fetch_ohlcv_public(symbol: str, timeframe: str = '4h', lookback: int = 200) 
     except ImportError:
         raise ImportError("ccxt ist nicht installiert. Bitte 'pip install ccxt' ausfuehren.")
 
-    exchange = ccxt.bitget({'enableRateLimit': True})
+    exchange = _make_exchange()
 
     try:
+        tf_ms = exchange.parse_timeframe(timeframe) * 1000
+        now_ms = exchange.milliseconds()
+        target_since = now_ms - lookback * tf_ms
+
         if lookback <= BATCH_SIZE:
-            raw = exchange.fetch_ohlcv(symbol, timeframe, limit=lookback)
+            raw = exchange.fetch_ohlcv(symbol, timeframe, since=target_since, limit=lookback)
         else:
-            # Pagination: rueckwaerts von jetzt, Batch um Batch
-            tf_ms = exchange.parse_timeframe(timeframe) * 1000  # Zeitfenster in Millisekunden
-            target_since = exchange.milliseconds() - lookback * tf_ms
+            # Pagination: vorwaerts ab target_since bis jetzt
             current_since = target_since
             raw = []
-            max_batches = (lookback // BATCH_SIZE) + 5  # Sicherheitsgrenze
+            max_batches = (lookback // BATCH_SIZE) + 10
             for _ in range(max_batches):
                 batch = exchange.fetch_ohlcv(
                     symbol, timeframe, since=current_since, limit=BATCH_SIZE
@@ -73,13 +102,11 @@ def fetch_ohlcv_public(symbol: str, timeframe: str = '4h', lookback: int = 200) 
                     break
                 raw.extend(batch)
                 last_ts = batch[-1][0]
-                current_since = last_ts + tf_ms
-                # Stoppen wenn wir genug oder in der Zukunft sind
-                if current_since >= exchange.milliseconds():
+                next_since = last_ts + tf_ms
+                if next_since >= now_ms or next_since <= current_since:
                     break
-                if len(batch) < BATCH_SIZE:
-                    break
-                _time.sleep(0.3)  # Rate-Limit einhalten
+                current_since = next_since
+                _time.sleep(0.2)
             # Duplikate entfernen und nur die letzten `lookback` Kerzen
             seen = set()
             deduped = []
