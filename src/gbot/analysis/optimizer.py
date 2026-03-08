@@ -161,6 +161,9 @@ def run_optimization(
 
         if result.get('error'):
             return -9999.0
+        # DD >= 100% = Liquidation in der Realität → immer ausschliessen
+        if result['max_drawdown_pct'] >= 100.0:
+            return -9999.0
         if mode == 'strict' and result['max_drawdown_pct'] > max_drawdown:
             return -9999.0
 
@@ -223,7 +226,8 @@ def write_config(result: dict, settings_file: str = None) -> str:
     symbol = result['symbol']
     safe = symbol.replace('/', '_').replace(':', '_')
     os.makedirs(CONFIGS_DIR, exist_ok=True)
-    config_path = os.path.join(CONFIGS_DIR, f"config_{safe}.json")
+    tf = result.get('timeframe', '').replace('/', '').replace(':', '')
+    config_path = os.path.join(CONFIGS_DIR, f"config_{safe}_{tf}.json")
 
     config = {
         "market": {
