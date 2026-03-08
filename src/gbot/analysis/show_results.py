@@ -325,129 +325,17 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
 
 
 # ---------------------------------------------------------------------------
-# Modus 4: Interaktive Charts (ASCII — Fibonacci Zonen + Grid-Levels)
+# Modus 4: Interaktive Charts (Plotly HTML)
 # ---------------------------------------------------------------------------
 
-def run_fibonacci_charts():
-    sep()
-    print("  gbot Interaktive Charts — Fibonacci-Zonen + Grid-Levels")
-    sep()
-
-    configs = load_configs()
-    if not configs:
-        print("  Keine Config-Dateien gefunden.")
-        return
-
+def run_interactive_charts():
     try:
-        from gbot.analysis.fibonacci import auto_fib_analysis
-    except ImportError as e:
-        print(f"  Fehler: {e}")
-        return
-
-    for filename, cfg in configs:
-        sym = cfg['market']['symbol']
-        fib_cfg = cfg['grid'].get('fibonacci', {})
-        tf = fib_cfg.get('timeframe', '4h')
-        lookback = fib_cfg.get('lookback', 200)
-        num_grids = cfg['grid']['num_grids']
-
-        print(f"\n  Symbol: {sym} | Zeitfenster: {tf}")
-        print("  " + "-" * 64)
-
-        try:
-            analysis = auto_fib_analysis(
-                symbol=sym,
-                timeframe=tf,
-                lookback=lookback,
-                swing_window=fib_cfg.get('swing_window', 10),
-                prefer_golden_zone=fib_cfg.get('prefer_golden_zone', False),
-            )
-        except Exception as e:
-            print(f"  Fehler: {e}")
-            continue
-
-        fib = analysis['fib_levels']
-        suggested = analysis['suggested_range']
-        current = analysis['current_price']
-        swing = analysis['swing_points']
-
-        lower = suggested['lower_price']
-        upper = suggested['upper_price']
-        spacing = (upper - lower) / num_grids if num_grids > 0 else 0
-
-        # Chart-Grenzen
-        chart_low = min(fib.values()) * 0.995
-        chart_high = max(fib.values()) * 1.005
-        chart_range = chart_high - chart_low
-        width = 48
-
-        def to_col(price):
-            if chart_range == 0:
-                return 0
-            return int((price - chart_low) / chart_range * width)
-
-        # Alle relevanten Level sammeln und sortieren (hoch → niedrig)
-        levels_to_draw = []
-        for label, price in sorted(fib.items(), key=lambda x: x[1], reverse=True):
-            levels_to_draw.append(('FIB', label, price))
-
-        # Grid-Levels hinzufuegen
-        for i in range(num_grids + 1):
-            gp = lower + i * spacing
-            levels_to_draw.append(('GRID', f'G{i}', gp))
-
-        # Preis und Marker
-        levels_to_draw.append(('PRICE', 'NOW', current))
-        levels_to_draw.sort(key=lambda x: x[2], reverse=True)
-
-        print(f"  {'Typ':<5} {'Level':<8} {'Preis':>14}  {'Chart'}")
-        print("  " + "-" * 64)
-
-        for kind, label, price in levels_to_draw:
-            col = to_col(price)
-            bar = ' ' * col
-
-            if kind == 'PRICE':
-                marker = f"{bar}◆ PREIS"
-                tag = f"  {'NOW':<5} {'aktuell':<8} {price:>14,.4f}  {marker}"
-            elif kind == 'GRID':
-                is_lower = abs(price - lower) < 0.001
-                is_upper = abs(price - upper) < 0.001
-                if is_lower:
-                    marker = f"{bar}|←  GRID UNTEN ({suggested['lower_label']})"
-                elif is_upper:
-                    marker = f"{bar}|←  GRID OBEN ({suggested['upper_label']})"
-                else:
-                    marker = f"{bar}·"
-                tag = f"  {'GRID':<5} {label:<8} {price:>14,.4f}  {marker}"
-            else:
-                is_lower = label == suggested['lower_label']
-                is_upper = label == suggested['upper_label']
-                in_golden = label in ('38.2%', '61.8%')
-                if is_lower or is_upper:
-                    marker = f"{bar}█ {label}"
-                elif in_golden:
-                    marker = f"{bar}▓ {label} (Goldene Zone)"
-                else:
-                    marker = f"{bar}░ {label}"
-                tag = f"  {'FIB':<5} {label:<8} {price:>14,.4f}  {marker}"
-
-            print(tag)
-
-        # Zusammenfassung
-        in_range = lower <= current <= upper
-        dist_lower = (current - lower) / current * 100
-        dist_upper = (upper - current) / current * 100
-        print()
-        print(f"  Trend           : {swing['trend'].upper()}")
-        print(f"  Swing High      : {swing['swing_high']:,.4f}")
-        print(f"  Swing Low       : {swing['swing_low']:,.4f}")
-        print(f"  In Grid-Range   : {'JA' if in_range else 'NEIN — Rebalancing wird ausgeloest'}")
-        if in_range:
-            print(f"  Abstand Unten   : {dist_lower:.2f}%  |  Abstand Oben: {dist_upper:.2f}%")
-        print(f"  Grid-Spacing    : {spacing:,.4f} ({spacing/current*100:.3f}% vom Preis)")
-
-    sep()
+        from gbot.analysis.interactive_charts import main as charts_main
+        charts_main()
+    except Exception as e:
+        print(f"\n  Fehler beim Ausfuehren der interaktiven Charts: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +353,9 @@ def main():
 
     mode = args.mode
 
-    # Modus 4 braucht keine Datumseingabe
+    # Modus 4 hat eigenes Eingabe-System
     if mode == '4':
-        run_fibonacci_charts()
+        run_interactive_charts()
         return
 
     # Datum und Kapital abfragen
