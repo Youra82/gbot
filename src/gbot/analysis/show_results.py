@@ -101,6 +101,7 @@ def _fetch_and_backtest(cfg: dict, start_date: str, end_date: str, capital: floa
     max_drawdown_pct = float(drawdown.max())
 
     first_epoch = grid_epochs[0] if grid_epochs else {}
+    end_capital = round(capital + total_pnl, 4)
     return {
         'symbol': sym,
         'timeframe': tf,
@@ -110,6 +111,7 @@ def _fetch_and_backtest(cfg: dict, start_date: str, end_date: str, capital: floa
         'roi_pct': round(roi_pct, 2),
         'max_drawdown_pct': round(max_drawdown_pct, 2),
         'total_pnl_usdt': round(total_pnl, 4),
+        'end_capital_usdt': end_capital,
         'lower': first_epoch.get('lower', 0),
         'upper': first_epoch.get('upper', 0),
         'lower_label': first_epoch.get('lower_label', 'n/a'),
@@ -153,6 +155,7 @@ def run_single_analysis(start_date: str, end_date: str, capital: float):
             'ROI %': r['roi_pct'],
             'Max DD %': r['max_drawdown_pct'],
             'PnL USDT': r['total_pnl_usdt'],
+            'Endkap. USDT': r['end_capital_usdt'],
         })
 
     if not all_results:
@@ -230,9 +233,12 @@ def run_manual_portfolio(start_date: str, end_date: str, capital: float):
     sep('-')
     for r in results:
         pnl_str = f"{r['total_pnl_usdt']:+.4f}"
-        print(f"  {r['symbol']:<22} ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  PnL: {pnl_str} USDT  Fills: {r['total_fills']}")
+        end_cap = r['end_capital_usdt']
+        print(f"  {r['symbol']:<22} ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  PnL: {pnl_str} USDT  Endkap: {end_cap:.2f} USDT  Fills: {r['total_fills']}")
     sep('-')
-    print(f"  Gesamt-Kapital   : {total_capital:.2f} USDT")
+    end_total = total_capital + total_pnl
+    print(f"  Startkapital     : {total_capital:.2f} USDT")
+    print(f"  Endkapital       : {end_total:.2f} USDT")
     print(f"  Gesamt-PnL       : {total_pnl:+.4f} USDT")
     print(f"  Portfolio ROI    : {portfolio_roi:+.2f}%")
     print(f"  Hoechster Max DD : {max_dd:.2f}%")
@@ -313,9 +319,12 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
     sep('-')
     for filename, cfg, r in best_team:
         sym = r['symbol']
-        print(f"  {sym:<22}  ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  Fills: {r['total_fills']}")
+        end_cap = r['end_capital_usdt']
+        print(f"  {sym:<22}  ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  Endkap: {end_cap:.2f} USDT  Fills: {r['total_fills']}")
     sep('-')
-    print(f"  Gesamt-Kapital   : {best_stats['total_capital']:.2f} USDT")
+    end_total = best_stats['total_capital'] + best_stats['total_pnl']
+    print(f"  Startkapital     : {best_stats['total_capital']:.2f} USDT")
+    print(f"  Endkapital       : {end_total:.2f} USDT")
     print(f"  Gesamt-PnL       : {best_stats['total_pnl']:+.4f} USDT")
     print(f"  Portfolio ROI    : {best_stats['roi']:+.2f}%")
     print(f"  Hoechster Max DD : {best_stats['max_dd']:.2f}%")
