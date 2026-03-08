@@ -97,7 +97,7 @@ def run_optimization(
         raise ImportError("optuna ist nicht installiert. Bitte 'pip install optuna' ausfuehren.")
 
     from gbot.analysis.fibonacci import auto_fib_analysis, fetch_ohlcv_public
-    from gbot.analysis.backtester import run_grid_backtest
+    from gbot.analysis.interactive_charts import simulate_dynamic_grid
 
     if lookback is None:
         lookback = LOOKBACK_BY_TF.get(timeframe, DEFAULT_LOOKBACK)
@@ -147,29 +147,58 @@ def run_optimization(
           f"leverage {LEVERAGE_MIN}-{LEVERAGE_MAX}")
 
     # 4. Optuna-Studie
+    def _run_sim(num_grids, leverage):
+        """Fuehrt dynamische Grid-Simulation durch und gibt (roi_pct, max_dd_pct, fills, pnl, epochs) zurueck."""
+        try:
+            epochs, pnl_df, fills_df = simulate_dynamic_grid(
+                df=df,
+                num_grids=num_grids,
+                leverage=leverage,
+                capital=capital,
+                lookback_fib=fib_lookback,
+                swing_window=FIB_SWING_WINDOW,
+                prefer_golden_zone=FIB_PREFER_GOLDEN_ZONE,
+                min_rebalance_hours=FIB_MIN_REBALANCE_HOURS,
+            )
+        except Exception:
+            return None
+
+        if pnl_df.empty:
+            return None
+
+        final_capital = pnl_df['capital'].iloc[-1]
+        roi_pct = (final_capital - capital) / capital * 100
+
+        peak = pnl_df['capital'].cummax()
+        peak = peak.where(peak > 0, capital)
+        drawdown = (peak - pnl_df['capital']) / peak * 100
+        max_dd = float(drawdown.max())
+
+        total_fills = len(fills_df)
+        total_pnl = float(pnl_df['pnl'].iloc[-1])
+        spacing = epochs[0]['spacing'] if epochs else 0.0
+
+        return {
+            'roi_pct': roi_pct,
+            'max_drawdown_pct': max_dd,
+            'total_fills': total_fills,
+            'total_pnl_usdt': total_pnl,
+            'spacing': spacing,
+        }
+
     def objective(trial):
         num_grids = trial.suggest_int('num_grids', NUM_GRIDS_MIN, NUM_GRIDS_MAX)
         leverage = trial.suggest_int('leverage', LEVERAGE_MIN, LEVERAGE_MAX)
 
-        result = run_grid_backtest(
-            df=df,
-            lower=lower,
-            upper=upper,
-            num_grids=num_grids,
-            leverage=leverage,
-            capital=capital,
-        )
-
-        if result.get('error'):
+        r = _run_sim(num_grids, leverage)
+        if r is None:
             return -9999.0
-        # DD >= 100% = Liquidation in der Realität → immer ausschliessen
-        if result['max_drawdown_pct'] >= 100.0:
+        if r['max_drawdown_pct'] >= 100.0:
             return -9999.0
-        # Max Drawdown immer durchsetzen (unabhaengig vom Modus)
-        if result['max_drawdown_pct'] > max_drawdown:
+        if r['max_drawdown_pct'] > max_drawdown:
             return -9999.0
 
-        return result['roi_pct']
+        return r['roi_pct']
 
     study = optuna.create_study(direction='maximize')
     study.optimize(objective, n_trials=n_trials, n_jobs=n_jobs, show_progress_bar=True)
@@ -180,16 +209,9 @@ def run_optimization(
             f"oder Kapital zu gering. DD-Limit erhoehen oder mehr Trials versuchen."
         )
 
-    # 5. Bestes Ergebnis
+    # 5. Bestes Ergebnis (nochmal berechnen fuer vollstaendige Metriken)
     best_params = study.best_params
-    best_result = run_grid_backtest(
-        df=df,
-        lower=lower,
-        upper=upper,
-        num_grids=best_params['num_grids'],
-        leverage=best_params['leverage'],
-        capital=capital,
-    )
+    best_result = _run_sim(best_params['num_grids'], best_params['leverage']) or {}
 
     return {
         'symbol': symbol,
@@ -207,7 +229,6 @@ def run_optimization(
         'total_fills': best_result.get('total_fills', 0),
         'total_pnl_usdt': best_result.get('total_pnl_usdt', 0),
         'spacing': best_result.get('spacing', 0),
-        'amount_per_grid': best_result.get('amount_per_grid', 0),
         'lower_price': lower,
         'upper_price': upper,
         'lower_label': lower_label,
