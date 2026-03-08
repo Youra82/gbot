@@ -221,7 +221,7 @@ def write_config(result: dict, settings_file: str = None) -> str:
     Gibt den Pfad zur Config-Datei zurueck.
     """
     symbol = result['symbol']
-    safe = symbol.replace('/', '_').replace(':', '')
+    safe = symbol.replace('/', '_').replace(':', '_')
     os.makedirs(CONFIGS_DIR, exist_ok=True)
     config_path = os.path.join(CONFIGS_DIR, f"config_{safe}.json")
 

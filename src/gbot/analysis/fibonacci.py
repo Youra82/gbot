@@ -59,20 +59,35 @@ def fetch_ohlcv_public(symbol: str, timeframe: str = '4h', lookback: int = 200) 
         if lookback <= BATCH_SIZE:
             raw = exchange.fetch_ohlcv(symbol, timeframe, limit=lookback)
         else:
-            # Pagination: mehrere Batches holen
+            # Pagination: rueckwaerts von jetzt, Batch um Batch
             tf_ms = exchange.parse_timeframe(timeframe) * 1000  # Zeitfenster in Millisekunden
-            since = exchange.milliseconds() - lookback * tf_ms
+            target_since = exchange.milliseconds() - lookback * tf_ms
+            current_since = target_since
             raw = []
-            while True:
-                batch = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=BATCH_SIZE)
+            max_batches = (lookback // BATCH_SIZE) + 5  # Sicherheitsgrenze
+            for _ in range(max_batches):
+                batch = exchange.fetch_ohlcv(
+                    symbol, timeframe, since=current_since, limit=BATCH_SIZE
+                )
                 if not batch:
                     break
                 raw.extend(batch)
+                last_ts = batch[-1][0]
+                current_since = last_ts + tf_ms
+                # Stoppen wenn wir genug oder in der Zukunft sind
+                if current_since >= exchange.milliseconds():
+                    break
                 if len(batch) < BATCH_SIZE:
-                    break  # letzte Seite erreicht
-                since = batch[-1][0] + tf_ms
+                    break
                 _time.sleep(0.3)  # Rate-Limit einhalten
-            raw = raw[-lookback:]   # nur die letzten N Kerzen behalten
+            # Duplikate entfernen und nur die letzten `lookback` Kerzen
+            seen = set()
+            deduped = []
+            for c in raw:
+                if c[0] not in seen:
+                    seen.add(c[0])
+                    deduped.append(c)
+            raw = sorted(deduped, key=lambda x: x[0])[-lookback:]
     except Exception as e:
         raise RuntimeError(f"Fehler beim Abrufen von OHLCV fuer {symbol} ({timeframe}): {e}")
 
