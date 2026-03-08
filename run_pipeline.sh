@@ -70,11 +70,10 @@ read -p "Auswahl (1-2) [Standard: 1]: " OPTIM_MODE; OPTIM_MODE=${OPTIM_MODE:-1}
 
 if [ "$OPTIM_MODE" == "1" ]; then
     OPTIM_MODE_ARG="strict"
-    read -p "Max Drawdown % [Standard: 30]: " MAX_DD; MAX_DD=${MAX_DD:-30}
 else
     OPTIM_MODE_ARG="best_profit"
-    MAX_DD=9999
 fi
+read -p "Max Drawdown % [Standard: 30]: " MAX_DD; MAX_DD=${MAX_DD:-30}
 
 # --- Pipeline starten ---
 for SYMBOL in $SYMBOLS; do
