@@ -176,6 +176,13 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
                     if grid_epochs:
                         grid_epochs[-1]['end_ts'] = ts
 
+                    # Offene Positionen zum aktuellen Preis schliessen (Rebalancing = neue Epoche).
+                    # Live-Bot cancelt alle Orders, Positionen bleiben offen; hier buchen wir
+                    # den unrealisierten P&L ein damit keine Zombie-Positionen akkumulieren.
+                    for _sp_key, (bp, pos_amt) in list(open_positions.items()):
+                        total_pnl += (price - bp) * pos_amt
+                    open_positions.clear()
+
                     new_spacing, new_levels, new_buys, new_sells = setup_grid(new_lower, new_upper, price)
 
                     grid_epochs.append({
