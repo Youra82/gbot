@@ -104,6 +104,7 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
 
     grid_epochs = []
     pnl_data = []
+    fills = []
 
     current_lower = None
     current_upper = None
@@ -210,6 +211,7 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
                     sp = _r(bp + current_spacing)
                     if sp <= _r(current_upper) + 1e-9:
                         new_sells.add(sp)
+                    fills.append({'timestamp': ts, 'price': bp, 'side': 'buy'})
 
             for sp in list(sell_orders):
                 if candle_high >= sp:
@@ -218,6 +220,7 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
                     bp = _r(sp - current_spacing)
                     if bp >= _r(current_lower) - 1e-9:
                         new_buys.add(bp)
+                    fills.append({'timestamp': ts, 'price': sp, 'side': 'sell'})
 
             sell_orders.update(new_sells - sell_orders)
             buy_orders.update(new_buys - buy_orders)
@@ -230,7 +233,8 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
         grid_epochs[-1]['end_ts'] = df.index[-1]
 
     pnl_df = pd.DataFrame(pnl_data).set_index('timestamp') if pnl_data else pd.DataFrame()
-    return grid_epochs, pnl_df
+    fills_df = pd.DataFrame(fills).set_index('timestamp') if fills else pd.DataFrame()
+    return grid_epochs, pnl_df, fills_df
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +242,7 @@ def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
 # ---------------------------------------------------------------------------
 
 def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
-                 grid_epochs: list, pnl_df: pd.DataFrame,
+                 grid_epochs: list, pnl_df: pd.DataFrame, fills_df: pd.DataFrame,
                  capital: float, num_grids: int, leverage: int,
                  start_date=None, end_date=None, window=None):
     try:
@@ -249,18 +253,28 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
         return None
 
     # Zeitraum-Filter
+    def _filter(frame, col=None):
+        if frame.empty:
+            return frame
+        f = frame
+        if window:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=window)
+            f = f[f.index >= cutoff]
+        if start_date:
+            f = f[f.index >= pd.to_datetime(start_date, utc=True)]
+        if end_date:
+            f = f[f.index <= pd.to_datetime(end_date, utc=True)]
+        return f
+
     if window:
         cutoff = datetime.now(timezone.utc) - timedelta(days=window)
         df = df[df.index >= cutoff].copy()
-        pnl_df = pnl_df[pnl_df.index >= cutoff] if not pnl_df.empty else pnl_df
     if start_date:
         df = df[df.index >= pd.to_datetime(start_date, utc=True)]
-        if not pnl_df.empty:
-            pnl_df = pnl_df[pnl_df.index >= pd.to_datetime(start_date, utc=True)]
     if end_date:
         df = df[df.index <= pd.to_datetime(end_date, utc=True)]
-        if not pnl_df.empty:
-            pnl_df = pnl_df[pnl_df.index <= pd.to_datetime(end_date, utc=True)]
+    pnl_df = _filter(pnl_df)
+    fills_df = _filter(fills_df)
 
     if df.empty:
         logger.warning(f"Keine Daten im Zeitraum fuer {symbol}")
@@ -360,16 +374,20 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
             rebalance_y.append((lower + upper) / 2)
 
     # Gefüllte Band-Traces hinzufügen (max 5 Traces)
+    # Legende: erster sichtbarer Farb-Trace bekommt erklärendes Label
+    legend_added = False
     for ci in range(5):
         if fill_xs[ci]:
+            show = not legend_added
+            legend_added = True
             fig.add_trace(go.Scatter(
                 x=fill_xs[ci], y=fill_ys[ci],
                 fill='toself',
                 fillcolor=epoch_color_fills[ci],
                 line=dict(color=epoch_color_lines[ci], width=0),
                 mode='lines',
-                showlegend=(ci == 0),
-                name='Grid-Zone' if ci == 0 else None,
+                showlegend=show,
+                name='Grid-Epoche (je Farbe = 1 Fib-Range)' if show else None,
                 hoverinfo='skip',
             ), secondary_y=False)
 
@@ -398,6 +416,29 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
             name='Rebalancing',
             showlegend=True,
         ), secondary_y=False)
+
+    # ===== BUY / SELL FILLS =====
+    if not fills_df.empty and 'side' in fills_df.columns and 'price' in fills_df.columns:
+        buys  = fills_df[fills_df['side'] == 'buy']
+        sells = fills_df[fills_df['side'] == 'sell']
+        if not buys.empty:
+            fig.add_trace(go.Scatter(
+                x=buys.index, y=buys['price'],
+                mode='markers',
+                marker=dict(color='#16a34a', symbol='triangle-up', size=7,
+                            line=dict(width=0.5, color='#14532d')),
+                name='Kauf (Long-Entry / Short-Exit)',
+                showlegend=True,
+            ), secondary_y=False)
+        if not sells.empty:
+            fig.add_trace(go.Scatter(
+                x=sells.index, y=sells['price'],
+                mode='markers',
+                marker=dict(color='#dc2626', symbol='triangle-down', size=7,
+                            line=dict(width=0.5, color='#7f1d1d')),
+                name='Verkauf (Short-Entry / Long-Exit)',
+                showlegend=True,
+            ), secondary_y=False)
 
     # ===== KONTOSTAND (rechte Y-Achse) =====
     if not pnl_df.empty and 'capital' in pnl_df.columns:
@@ -495,7 +536,7 @@ def main():
 
             logger.info(f"  {len(df)} Kerzen geladen. Simuliere dynamisches Grid...")
 
-            grid_epochs, pnl_df = simulate_dynamic_grid(
+            grid_epochs, pnl_df, fills_df = simulate_dynamic_grid(
                 df=df,
                 num_grids=num_grids,
                 leverage=leverage,
@@ -512,7 +553,7 @@ def main():
             logger.info("Erstelle interaktiven Chart...")
             fig = create_chart(
                 symbol=symbol, timeframe=tf, df=df,
-                grid_epochs=grid_epochs, pnl_df=pnl_df,
+                grid_epochs=grid_epochs, pnl_df=pnl_df, fills_df=fills_df,
                 capital=capital, num_grids=num_grids, leverage=leverage,
                 start_date=start_date, end_date=end_date, window=window,
             )
