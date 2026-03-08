@@ -85,7 +85,7 @@ def run_optimization(
         start_date : Backtest-Startdatum 'JJJJ-MM-TT' (optional, filtert df)
         end_date   : Backtest-Enddatum  'JJJJ-MM-TT' (optional)
         n_jobs     : Optuna parallele Jobs (-1 = alle Kerne)
-        mode       : 'strict' (max_drawdown-Limit aktiv) | 'best_profit' (kein Limit)
+        mode       : 'strict' (ROI + DD-Limit) | 'best_profit' (max ROI, DD-Limit gilt trotzdem)
 
     Returns:
         dict mit best_params, best_result, fib_analysis
@@ -140,8 +140,9 @@ def run_optimization(
     print(f"  Swing High/Low  : {swing['swing_high']:.4f} / {swing['swing_low']:.4f}")
     print(f"  Trend           : {swing['trend'].upper()}")
     print(f"  Aktueller Preis : {current_price:.4f}")
-    dd_info = f"Max DD: {max_drawdown}%" if mode == 'strict' else "kein Drawdown-Limit"
-    print(f"  Modus           : {mode} ({dd_info})")
+    dd_info = f"Max DD: {max_drawdown}%"
+    mode_desc = "ROI maximieren, kein Rendite-Limit" if mode == 'best_profit' else "streng, ROI + DD-Limit"
+    print(f"  Modus           : {mode} ({mode_desc}, {dd_info})")
     print(f"  Optimiere       : {n_trials} Trials | num_grids {NUM_GRIDS_MIN}-{NUM_GRIDS_MAX} | "
           f"leverage {LEVERAGE_MIN}-{LEVERAGE_MAX}")
 
@@ -164,7 +165,8 @@ def run_optimization(
         # DD >= 100% = Liquidation in der Realität → immer ausschliessen
         if result['max_drawdown_pct'] >= 100.0:
             return -9999.0
-        if mode == 'strict' and result['max_drawdown_pct'] > max_drawdown:
+        # Max Drawdown immer durchsetzen (unabhaengig vom Modus)
+        if result['max_drawdown_pct'] > max_drawdown:
             return -9999.0
 
         return result['roi_pct']
@@ -175,7 +177,7 @@ def run_optimization(
     if study.best_value <= -9999.0:
         raise ValueError(
             f"Kein gueltiges Ergebnis gefunden. Drawdown-Limit ({max_drawdown}%) zu streng "
-            f"oder Kapital zu gering. Modus 2 oder hoehere Trials versuchen."
+            f"oder Kapital zu gering. DD-Limit erhoehen oder mehr Trials versuchen."
         )
 
     # 5. Bestes Ergebnis
