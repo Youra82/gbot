@@ -6,7 +6,7 @@ Modi:
   1) Grid Status Uebersicht    — alle Tracker-Dateien kompakt
   2) Order-Analyse             — Aufschluesselung nach Grid-Levels
   3) Performance & PnL         — Statistiken und Kennzahlen
-  4) Vollstaendige Code-Doku   — alle Quellcode-Dateien
+  4) Fibonacci-Analyse         — aktueller Range fuer alle aktiven Symbole
 """
 import argparse
 import glob
@@ -217,36 +217,64 @@ def mode_3_performance():
 
 
 # ---------------------------------------------------------------------------
-# Modus 4: Vollstaendige Code-Dokumentation
+# Modus 4: Fibonacci-Analyse
 # ---------------------------------------------------------------------------
 
-def mode_4_code():
-    header("Modus 4 — Vollstaendige Code-Dokumentation")
+def mode_4_fibonacci():
+    header("Modus 4 — Fibonacci-Analyse (aktueller Range)")
 
-    exclude_dirs = {'.venv', '.git', '__pycache__', 'data', 'logs', 'artifacts'}
+    configs = load_configs()
+    if not configs:
+        print("\n  Keine Config-Dateien gefunden.")
+        print("  Starte zuerst ./run_pipeline.sh um Symbole zu konfigurieren.")
+        return
 
-    all_files = []
-    for root, dirs, files in os.walk(PROJECT_ROOT):
-        dirs[:] = [d for d in dirs if d not in exclude_dirs]
-        for fname in sorted(files):
-            if fname.endswith(('.py', '.sh', '.json', '.txt')) and fname != 'secret.json':
-                all_files.append(os.path.join(root, fname))
+    try:
+        from gbot.analysis.fibonacci import auto_fib_analysis
+    except ImportError as e:
+        print(f"\n  Fehler: fibonacci-Modul nicht verfuegbar: {e}")
+        return
 
-    all_files.sort()
+    for filename, cfg in configs:
+        sym = cfg.get('market', {}).get('symbol', '?')
+        fib_cfg = cfg.get('grid', {}).get('fibonacci', {})
+        timeframe = fib_cfg.get('timeframe', '4h')
+        lookback = fib_cfg.get('lookback', 200)
+        swing_window = fib_cfg.get('swing_window', 10)
+        prefer_golden = fib_cfg.get('prefer_golden_zone', False)
 
-    for path in all_files:
-        rel = os.path.relpath(path, PROJECT_ROOT)
-        sep('=')
-        print(f"DATEI: {rel}")
-        sep('-')
+        print(f"\n  Symbol: {sym} | Zeitfenster: {timeframe} | Lookback: {lookback} Kerzen")
+        print("  " + "-" * 56)
         try:
-            with open(path, encoding='utf-8') as f:
-                for i, line in enumerate(f, 1):
-                    print(f"{i:4d}  {line}", end='')
+            analysis = auto_fib_analysis(
+                symbol=sym,
+                timeframe=timeframe,
+                lookback=lookback,
+                swing_window=swing_window,
+                prefer_golden_zone=prefer_golden,
+            )
+            swing = analysis['swing_points']
+            fib = analysis['fib_levels']
+            suggested = analysis['suggested_range']
+            current = analysis['current_price']
+
+            print(f"  Aktueller Preis : {current:,.4f}")
+            print(f"  Swing High      : {swing['swing_high']:,.4f}")
+            print(f"  Swing Low       : {swing['swing_low']:,.4f}")
+            print(f"  Trend           : {swing['trend'].upper()}")
+            print(f"  In Goldener Zone: {'JA' if suggested['in_golden_zone'] else 'NEIN'}")
+            print()
+            print(f"  Vorgeschlagener Grid-Bereich:")
+            print(f"    Unten ({suggested['lower_label']}): {suggested['lower_price']:,.4f}")
+            print(f"    Oben  ({suggested['upper_label']}): {suggested['upper_price']:,.4f}")
+            width = suggested['upper_price'] - suggested['lower_price']
+            width_pct = width / current * 100 if current > 0 else 0
+            print(f"    Breite: {width:,.4f} ({width_pct:.2f}% vom Preis)")
+
         except Exception as e:
-            print(f"  [Lesefehler: {e}]")
-        print()
-    sep()
+            print(f"  Fehler bei Fibonacci-Analyse: {e}")
+
+    sep('-')
 
 
 # ---------------------------------------------------------------------------
@@ -264,14 +292,14 @@ def main():
         print("  1) Grid Status Uebersicht")
         print("  2) Order-Analyse nach Grid-Levels")
         print("  3) Performance & PnL Analyse")
-        print("  4) Vollstaendige Code-Dokumentation")
+        print("  4) Fibonacci-Analyse (aktueller Range fuer alle Symbole)")
         try:
             raw = input("Auswahl (1-4) [Standard: 1]: ").strip()
             mode = int(raw) if raw else 1
         except (ValueError, EOFError):
             mode = 1
 
-    modes = {1: mode_1_status, 2: mode_2_orders, 3: mode_3_performance, 4: mode_4_code}
+    modes = {1: mode_1_status, 2: mode_2_orders, 3: mode_3_performance, 4: mode_4_fibonacci}
     func = modes.get(mode)
     if func:
         func()
