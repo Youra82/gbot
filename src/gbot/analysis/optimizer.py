@@ -252,7 +252,11 @@ def write_config(result: dict, settings_file: str = None) -> str:
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=4)
 
-    # settings.json aktualisieren
+    # settings.json aktualisieren — nur wenn Backtest Fills hatte
+    if result.get('total_fills', 0) == 0:
+        logger.warning(f"Config {config_path} gespeichert, aber NICHT aktiviert (0 Fills im Backtest).")
+        return config_path
+
     if settings_file and os.path.exists(settings_file):
         try:
             with open(settings_file, 'r') as f:
@@ -306,6 +310,17 @@ def print_result(result: dict):
         print(f"    Ø PnL / Fill   : {avg:+.4f} USDT")
     print(f"    Kapital         : {result['capital']} USDT")
     print('=' * w)
+
+    if result['total_fills'] == 0:
+        print()
+        print("  !! WARNUNG: Backtest zeigt 0 Fills !!")
+        print("     Moegliche Ursachen:")
+        print("     - Preis war im Backtest-Zeitraum ausserhalb der Grid-Range")
+        print("     - Starker Trend (kein Seitwärtsmarkt) → Grid ungeeignet")
+        print("     - Zu wenige Kerzen fuer aussagekraeftigen Test")
+        print("     Empfehlung: kleineres Timeframe (z.B. 4h) oder")
+        print("     anderen Backtest-Zeitraum versuchen.")
+        print('=' * w)
 
 
 # ---------------------------------------------------------------------------
