@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
 Interactive Charts fuer gbot.
-Zeigt Candlestick-Chart mit Fibonacci-Zonen + Grid-Levels + PnL-Kurve.
-Speichert als HTML, optional Versand via Telegram.
+Zeigt Candlestick-Chart mit dynamischen Fibonacci-Zonen + Grid-Levels + PnL-Kurve.
+
+Fibonacci wird dynamisch berechnet — genau wie im Live-Bot:
+  - Initialisierung: erste lookback_fib Kerzen bestimmen den Grid-Bereich
+  - Rebalancing: wenn Preis die Range verlaesst (Cooldown beachten),
+    wird Fibonacci neu berechnet und das Grid neu gesetzt
 """
 
 import os
@@ -73,61 +77,160 @@ def select_configs():
 
 
 # ---------------------------------------------------------------------------
-# PnL-Kurve aus Backtest aufbauen
+# Dynamisches Fibonacci-Rebalancing (wie Live-Bot)
 # ---------------------------------------------------------------------------
 
-def build_pnl_curve(df: pd.DataFrame, lower: float, upper: float,
-                    num_grids: int, leverage: float, capital: float) -> pd.DataFrame:
+def simulate_dynamic_grid(df: pd.DataFrame, num_grids: int, leverage: float,
+                           capital: float, lookback_fib: int = 200,
+                           swing_window: int = 10, prefer_golden_zone: bool = False,
+                           min_rebalance_hours: int = 4) -> tuple:
     """
-    Fuehrt den Grid-Backtest candle-by-candle durch und gibt
-    eine DataFrame mit kumulativem PnL zurueck.
+    Simuliert das Grid mit dynamischem Fibonacci-Rebalancing — exakt wie der Live-Bot.
+
+    - Fibonacci wird initial aus den ersten lookback_fib Kerzen berechnet
+    - Wenn Preis die Range verlaesst (nach Cooldown): Fibonacci neu berechnen
+    - Jede Grid-Epoche wird aufgezeichnet: (start_ts, end_ts, lower, upper, fib_levels)
+
+    Returns:
+        (grid_epochs, pnl_df)
+        grid_epochs: Liste von Dicts {start_ts, end_ts, lower, upper, lower_label,
+                                      upper_label, fib_levels, swing}
+        pnl_df: DataFrame mit kumulativem PnL-Verlauf
     """
+    from gbot.analysis.fibonacci import find_swing_high_low, calculate_fib_levels, find_best_grid_range
     from gbot.analysis.backtester import DEFAULT_FEE_RATE, _r
 
-    if upper <= lower or num_grids < 2:
-        return pd.DataFrame()
+    min_rebalance_td = pd.Timedelta(hours=min_rebalance_hours)
 
-    spacing = (upper - lower) / num_grids
-    levels = [_r(lower + i * spacing) for i in range(num_grids + 1)]
-    mid_price = (upper + lower) / 2.0
-    amount = (capital * leverage) / (num_grids * mid_price)
-    fee_rate = DEFAULT_FEE_RATE
+    grid_epochs = []
+    pnl_data = []
 
-    init_price = float(df['close'].iloc[0])
-    buy_orders = {l for l in levels if l < init_price}
-    sell_orders = {l for l in levels if l > init_price}
-
+    current_lower = None
+    current_upper = None
+    current_spacing = None
+    current_levels = []
+    last_rebalance_time = None
+    buy_orders = set()
+    sell_orders = set()
     total_pnl = 0.0
-    pnl_series = []
+    amount = 0.0
 
-    for ts, row in df.iterrows():
+    def calc_fib(window_df, ref_price):
+        """Fibonacci aus einem OHLCV-Fenster berechnen."""
+        swing = find_swing_high_low(window_df, swing_window=swing_window)
+        fib_levels = calculate_fib_levels(swing['swing_low'], swing['swing_high'])
+        suggested = find_best_grid_range(fib_levels, ref_price, prefer_golden_zone)
+        return suggested, fib_levels, swing
+
+    def setup_grid(lower, upper, ref_price):
+        """Grid-Orders fuer neuen Bereich aufsetzen."""
+        nonlocal amount
+        spacing = (upper - lower) / num_grids
+        levels = [_r(lower + j * spacing) for j in range(num_grids + 1)]
+        mid = (upper + lower) / 2.0
+        amount = (capital * leverage) / (num_grids * mid)
+        buys = {l for l in levels if l < ref_price}
+        sells = {l for l in levels if l > ref_price}
+        return spacing, levels, buys, sells
+
+    df_arr = list(df.iterrows())
+    n = len(df_arr)
+
+    for i, (ts, row) in enumerate(df_arr):
+        price = float(row['close'])
         candle_low = float(row['low'])
         candle_high = float(row['high'])
-        new_sell = set()
-        new_buy = set()
 
-        for bp in list(buy_orders):
-            if candle_low <= bp:
-                total_pnl -= bp * amount * fee_rate
-                buy_orders.discard(bp)
-                sp = _r(bp + spacing)
-                if sp <= _r(upper) + 1e-9:
-                    new_sell.add(sp)
+        # ---- Initialisierung oder Rebalancing pruefen ----
+        need_rebalance = False
 
-        for sp in list(sell_orders):
-            if candle_high >= sp:
-                total_pnl += spacing * amount - sp * amount * fee_rate
-                sell_orders.discard(sp)
-                bp = _r(sp - spacing)
-                if bp >= _r(lower) - 1e-9:
-                    new_buy.add(bp)
+        if current_lower is None:
+            # Erstinitialisierung: warte bis lookback_fib Kerzen vorhanden
+            if i < lookback_fib:
+                pnl_data.append({'timestamp': ts, 'pnl': 0.0, 'capital': capital})
+                continue
+            need_rebalance = True
 
-        sell_orders.update(new_sell - sell_orders)
-        buy_orders.update(new_buy - buy_orders)
-        pnl_series.append({'timestamp': ts, 'pnl': round(total_pnl, 4),
-                           'capital': round(capital + total_pnl, 4)})
+        elif not (current_lower <= price <= current_upper):
+            # Preis ausserhalb der Range
+            cooldown_ok = (last_rebalance_time is None or
+                           (ts - last_rebalance_time) >= min_rebalance_td)
+            if cooldown_ok:
+                need_rebalance = True
 
-    return pd.DataFrame(pnl_series).set_index('timestamp')
+        if need_rebalance:
+            # Fibonacci aus den letzten lookback_fib Kerzen berechnen
+            window = df.iloc[max(0, i - lookback_fib):i]
+            try:
+                suggested, fib_levels, swing = calc_fib(window, price)
+                new_lower = suggested['lower_price']
+                new_upper = suggested['upper_price']
+
+                if new_upper > new_lower and new_upper > 0:
+                    # Aktuelle Epoche abschliessen
+                    if grid_epochs:
+                        grid_epochs[-1]['end_ts'] = ts
+
+                    new_spacing, new_levels, new_buys, new_sells = setup_grid(new_lower, new_upper, price)
+
+                    grid_epochs.append({
+                        'start_ts': ts,
+                        'end_ts': None,   # wird beim naechsten Rebalancing gesetzt
+                        'lower': new_lower,
+                        'upper': new_upper,
+                        'lower_label': suggested['lower_label'],
+                        'upper_label': suggested['upper_label'],
+                        'fib_levels': fib_levels,
+                        'swing': swing,
+                        'spacing': new_spacing,
+                    })
+
+                    current_lower = new_lower
+                    current_upper = new_upper
+                    current_spacing = new_spacing
+                    current_levels = new_levels
+                    buy_orders = new_buys
+                    sell_orders = new_sells
+                    last_rebalance_time = ts
+
+            except Exception:
+                pnl_data.append({'timestamp': ts, 'pnl': total_pnl, 'capital': capital + total_pnl})
+                continue
+
+        # ---- Grid-Fills simulieren ----
+        if current_spacing and amount > 0:
+            new_sells = set()
+            new_buys = set()
+            fee_rate = DEFAULT_FEE_RATE
+
+            for bp in list(buy_orders):
+                if candle_low <= bp:
+                    total_pnl -= bp * amount * fee_rate
+                    buy_orders.discard(bp)
+                    sp = _r(bp + current_spacing)
+                    if sp <= _r(current_upper) + 1e-9:
+                        new_sells.add(sp)
+
+            for sp in list(sell_orders):
+                if candle_high >= sp:
+                    total_pnl += current_spacing * amount - sp * amount * fee_rate
+                    sell_orders.discard(sp)
+                    bp = _r(sp - current_spacing)
+                    if bp >= _r(current_lower) - 1e-9:
+                        new_buys.add(bp)
+
+            sell_orders.update(new_sells - sell_orders)
+            buy_orders.update(new_buys - buy_orders)
+
+        pnl_data.append({'timestamp': ts, 'pnl': round(total_pnl, 4),
+                         'capital': round(capital + total_pnl, 4)})
+
+    # Letzte Epoche abschliessen
+    if grid_epochs and grid_epochs[-1]['end_ts'] is None:
+        grid_epochs[-1]['end_ts'] = df.index[-1]
+
+    pnl_df = pd.DataFrame(pnl_data).set_index('timestamp') if pnl_data else pd.DataFrame()
+    return grid_epochs, pnl_df
 
 
 # ---------------------------------------------------------------------------
@@ -135,10 +238,8 @@ def build_pnl_curve(df: pd.DataFrame, lower: float, upper: float,
 # ---------------------------------------------------------------------------
 
 def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
-                 fib_levels: dict, lower: float, upper: float,
-                 num_grids: int, leverage: int, capital: float,
-                 pnl_df: pd.DataFrame, current_price: float,
-                 swing: dict, suggested: dict,
+                 grid_epochs: list, pnl_df: pd.DataFrame,
+                 capital: float, num_grids: int, leverage: int,
                  start_date=None, end_date=None, window=None):
     try:
         import plotly.graph_objects as go
@@ -165,9 +266,6 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
         logger.warning(f"Keine Daten im Zeitraum fuer {symbol}")
         return None
 
-    x0 = df.index.min()
-    x1 = df.index.max()
-
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
     # ===== CANDLESTICKS =====
@@ -181,79 +279,110 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
         showlegend=True,
     ), secondary_y=False)
 
-    # ===== FIBONACCI ZONEN als farbige Baender =====
-    fib_colors = {
-        '0.0%':   ('rgba(239,68,68,0.08)',  'rgba(239,68,68,0.5)'),
-        '23.6%':  ('rgba(249,115,22,0.08)', 'rgba(249,115,22,0.5)'),
-        '38.2%':  ('rgba(234,179,8,0.12)',  'rgba(234,179,8,0.6)'),
-        '50.0%':  ('rgba(168,85,247,0.10)', 'rgba(168,85,247,0.5)'),
-        '61.8%':  ('rgba(234,179,8,0.12)',  'rgba(234,179,8,0.6)'),
-        '78.6%':  ('rgba(249,115,22,0.08)', 'rgba(249,115,22,0.5)'),
-        '100%':   ('rgba(239,68,68,0.08)',  'rgba(239,68,68,0.5)'),
-    }
+    # ===== GRID-EPOCHEN: Fibonacci-Baender + Grid-Levels pro Zeitraum =====
+    epoch_colors = [
+        ('#1d4ed8', 'rgba(37,99,235,0.10)'),   # blau
+        ('#7c3aed', 'rgba(124,58,237,0.10)'),   # lila
+        ('#0891b2', 'rgba(8,145,178,0.10)'),    # cyan
+        ('#059669', 'rgba(5,150,105,0.10)'),    # gruen
+        ('#d97706', 'rgba(217,119,6,0.10)'),    # orange
+    ]
 
-    sorted_levels = sorted(fib_levels.items(), key=lambda x: x[1])
-    for i in range(len(sorted_levels) - 1):
-        label_lo, price_lo = sorted_levels[i]
-        label_hi, price_hi = sorted_levels[i + 1]
-        fill, line_c = fib_colors.get(label_lo, ('rgba(100,100,100,0.05)', 'rgba(100,100,100,0.3)'))
-        is_grid_range = (abs(price_lo - lower) < 0.01 and abs(price_hi - upper) < 0.01)
-        if is_grid_range:
-            fill = 'rgba(37,99,235,0.12)'
-            line_c = 'rgba(37,99,235,0.7)'
+    # Filter: nur Epochen die im sichtbaren Zeitraum liegen
+    visible_start = df.index.min()
+    visible_end   = df.index.max()
 
-        fig.add_shape(type='rect', x0=x0, x1=x1, y0=price_lo, y1=price_hi,
-                      fillcolor=fill, line=dict(color=line_c, width=1, dash='dot'), layer='below')
+    shown_epochs = [
+        e for e in grid_epochs
+        if e['end_ts'] is not None and
+           pd.Timestamp(e['end_ts']) >= visible_start and
+           pd.Timestamp(e['start_ts']) <= visible_end
+    ]
 
-        mid = (price_lo + price_hi) / 2
-        fig.add_shape(type='line', x0=x0, x1=x1, y0=price_hi, y1=price_hi,
-                      line=dict(color=line_c, width=1), layer='below')
-        fig.add_annotation(x=x1, y=price_hi, text=f" {label_hi}",
-                           showarrow=False, xanchor='left',
-                           font=dict(size=10, color=line_c), yref='y')
+    rebalance_x = []
+    rebalance_y = []
 
-    # ===== GRID-LEVELS als gestrichelte Linien =====
-    spacing = (upper - lower) / num_grids
-    for i in range(num_grids + 1):
-        gp = lower + i * spacing
-        is_boundary = (i == 0 or i == num_grids)
-        color = '#1d4ed8' if is_boundary else '#93c5fd'
-        width = 1.5 if is_boundary else 0.8
-        dash = 'solid' if is_boundary else 'dash'
-        fig.add_shape(type='line', x0=x0, x1=x1, y0=gp, y1=gp,
-                      line=dict(color=color, width=width, dash=dash), layer='above')
-        if is_boundary:
-            label = f" Grid {'Unten' if i == 0 else 'Oben'} ({suggested['lower_label'] if i == 0 else suggested['upper_label']})"
-            fig.add_annotation(x=x0, y=gp, text=label, showarrow=False,
-                               xanchor='right', font=dict(size=10, color='#1d4ed8'), yref='y')
+    for idx, epoch in enumerate(shown_epochs):
+        color_line, color_fill = epoch_colors[idx % len(epoch_colors)]
+        x0 = max(pd.Timestamp(epoch['start_ts']), visible_start)
+        x1 = min(pd.Timestamp(epoch['end_ts']), visible_end)
+        lower = epoch['lower']
+        upper = epoch['upper']
+        spacing = epoch['spacing']
 
-    # ===== AKTUELLER PREIS =====
-    fig.add_shape(type='line', x0=x0, x1=x1, y0=current_price, y1=current_price,
-                  line=dict(color='#f59e0b', width=2, dash='dot'), layer='above')
-    fig.add_annotation(x=x1, y=current_price,
-                       text=f" Preis: {current_price:,.4f}",
-                       showarrow=False, xanchor='left',
-                       font=dict(size=11, color='#f59e0b', weight='bold'), yref='y')
+        # Grid-Bereich als farbiges Band
+        fig.add_shape(
+            type='rect', x0=x0, x1=x1, y0=lower, y1=upper,
+            fillcolor=color_fill,
+            line=dict(color=color_line, width=1.5),
+            layer='below',
+        )
 
-    # ===== PNL / KONTOSTAND (rechte Y-Achse) =====
+        # Grid-Levels als gestrichelte Linien
+        for j in range(num_grids + 1):
+            gp = lower + j * spacing
+            is_boundary = (j == 0 or j == num_grids)
+            fig.add_shape(
+                type='line', x0=x0, x1=x1, y0=gp, y1=gp,
+                line=dict(color=color_line,
+                          width=1.5 if is_boundary else 0.6,
+                          dash='solid' if is_boundary else 'dash'),
+                layer='above',
+            )
+
+        # Fibonacci-Levels als Annotations (nur sichtbar wenn Epoche lang genug)
+        duration = (pd.Timestamp(x1) - pd.Timestamp(x0)).total_seconds()
+        total_duration = (visible_end - visible_start).total_seconds()
+        if total_duration > 0 and duration / total_duration > 0.05:
+            fig.add_annotation(
+                x=x0, y=upper,
+                text=f" {epoch['upper_label']}",
+                showarrow=False, xanchor='left',
+                font=dict(size=9, color=color_line), yref='y',
+            )
+            fig.add_annotation(
+                x=x0, y=lower,
+                text=f" {epoch['lower_label']}",
+                showarrow=False, xanchor='left',
+                font=dict(size=9, color=color_line), yref='y',
+            )
+
+        # Rebalancing-Marker
+        if idx > 0:
+            rebalance_x.append(pd.Timestamp(epoch['start_ts']))
+            mid = (lower + upper) / 2
+            rebalance_y.append(mid)
+
+    # Rebalancing-Punkte anzeigen
+    if rebalance_x:
+        fig.add_trace(go.Scatter(
+            x=rebalance_x, y=rebalance_y, mode='markers',
+            marker=dict(color='#f59e0b', symbol='diamond', size=10,
+                        line=dict(width=1.5, color='#92400e')),
+            name='Rebalancing',
+            showlegend=True,
+        ), secondary_y=False)
+
+    # ===== KONTOSTAND (rechte Y-Achse) =====
     if not pnl_df.empty and 'capital' in pnl_df.columns:
         fig.add_trace(go.Scatter(
             x=pnl_df.index, y=pnl_df['capital'],
             name='Kontostand',
             line=dict(color='#2563eb', width=2),
-            opacity=0.8,
+            opacity=0.85,
             showlegend=True,
         ), secondary_y=True)
 
     # ===== TITEL =====
-    total_pnl = pnl_df['pnl'].iloc[-1] if not pnl_df.empty else 0
+    n_epochs = len(shown_epochs)
+    total_pnl = pnl_df['pnl'].iloc[-1] if not pnl_df.empty and 'pnl' in pnl_df.columns else 0
     roi = total_pnl / capital * 100 if capital > 0 else 0
     title_text = (
-        f"{symbol} {timeframe} - gbot Grid | "
+        f"{symbol} {timeframe} - gbot Grid (dynamisch) | "
         f"Kapital: {capital:.0f} USDT | "
-        f"PnL: {'+' if total_pnl >= 0 else ''}{total_pnl:.2f} USDT ({roi:+.1f}%) | "
+        f"PnL: {total_pnl:+.2f} USDT ({roi:+.1f}%) | "
         f"Grids: {num_grids} | Hebel: {leverage}x | "
-        f"Trend: {swing['trend'].upper()}"
+        f"Rebalancings: {n_epochs - 1 if n_epochs > 0 else 0}"
     )
 
     fig.update_layout(
@@ -299,7 +428,7 @@ def main():
     except Exception:
         telegram_config = {}
 
-    from gbot.analysis.fibonacci import fetch_ohlcv_public, auto_fib_analysis
+    from gbot.analysis.fibonacci import fetch_ohlcv_public
     from gbot.analysis.optimizer import LOOKBACK_BY_TF, DEFAULT_LOOKBACK
 
     for filename, filepath in selected_configs:
@@ -307,51 +436,47 @@ def main():
             with open(filepath, 'r') as f:
                 cfg = json.load(f)
 
-            symbol = cfg['market']['symbol']
-            fib_cfg = cfg['grid'].get('fibonacci', {})
-            tf = fib_cfg.get('timeframe', '4h')
-            lookback = LOOKBACK_BY_TF.get(tf, DEFAULT_LOOKBACK)
+            symbol    = cfg['market']['symbol']
+            fib_cfg   = cfg['grid'].get('fibonacci', {})
+            tf        = fib_cfg.get('timeframe', '4h')
+            lookback  = LOOKBACK_BY_TF.get(tf, DEFAULT_LOOKBACK)
             num_grids = cfg['grid']['num_grids']
-            leverage = cfg['risk'].get('leverage', 1)
+            leverage  = cfg['risk'].get('leverage', 1)
+            lookback_fib       = fib_cfg.get('lookback', 200)
+            swing_window       = fib_cfg.get('swing_window', 10)
+            prefer_golden      = fib_cfg.get('prefer_golden_zone', False)
+            min_rebalance_h    = fib_cfg.get('min_rebalance_interval_hours', 4)
 
             logger.info(f"\nVerarbeite {symbol} ({tf})...")
 
             logger.info("Lade OHLCV-Daten...")
             df = fetch_ohlcv_public(symbol, tf, lookback)
-            if start_date:
-                df = df[df.index >= start_date]
-            if end_date:
-                df = df[df.index <= end_date]
 
             if df.empty:
                 logger.warning(f"Keine Daten fuer {symbol}")
                 continue
 
-            logger.info("Berechne Fibonacci-Range...")
-            analysis = auto_fib_analysis(
-                symbol=symbol,
-                timeframe=tf,
-                lookback=fib_cfg.get('lookback', 200),
-                swing_window=fib_cfg.get('swing_window', 10),
-                prefer_golden_zone=fib_cfg.get('prefer_golden_zone', False),
-            )
-            fib_levels = analysis['fib_levels']
-            suggested  = analysis['suggested_range']
-            swing      = analysis['swing_points']
-            current    = analysis['current_price']
-            lower      = suggested['lower_price']
-            upper      = suggested['upper_price']
+            logger.info(f"  {len(df)} Kerzen geladen. Simuliere dynamisches Grid...")
 
-            logger.info("Berechne PnL-Kurve...")
-            pnl_df = build_pnl_curve(df, lower, upper, num_grids, leverage, capital)
+            grid_epochs, pnl_df = simulate_dynamic_grid(
+                df=df,
+                num_grids=num_grids,
+                leverage=leverage,
+                capital=capital,
+                lookback_fib=lookback_fib,
+                swing_window=swing_window,
+                prefer_golden_zone=prefer_golden,
+                min_rebalance_hours=min_rebalance_h,
+            )
+
+            logger.info(f"  {len(grid_epochs)} Grid-Epochen, "
+                        f"{len(grid_epochs) - 1 if grid_epochs else 0} Rebalancings")
 
             logger.info("Erstelle interaktiven Chart...")
             fig = create_chart(
                 symbol=symbol, timeframe=tf, df=df,
-                fib_levels=fib_levels, lower=lower, upper=upper,
-                num_grids=num_grids, leverage=leverage, capital=capital,
-                pnl_df=pnl_df, current_price=current,
-                swing=swing, suggested=suggested,
+                grid_epochs=grid_epochs, pnl_df=pnl_df,
+                capital=capital, num_grids=num_grids, leverage=leverage,
                 start_date=start_date, end_date=end_date, window=window,
             )
 
