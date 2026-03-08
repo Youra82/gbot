@@ -3,39 +3,34 @@
 Analyse- und Anzeige-Skript fuer den gbot.
 
 Modi:
-  1) Grid Status Uebersicht    — alle Tracker-Dateien kompakt
-  2) Order-Analyse             — Aufschluesselung nach Grid-Levels
-  3) Performance & PnL         — Statistiken und Kennzahlen
-  4) Fibonacci-Analyse         — aktueller Range fuer alle aktiven Symbole
+  1) Einzel-Analyse            — jede Grid-Strategie wird isoliert getestet
+  2) Manuelle Portfolio-Sim    — du waehlst das Team
+  3) Auto Portfolio-Optimierung— der Bot waehlt das beste Team
+  4) Interaktive Charts        — Fibonacci-Zonen + Grid-Levels
 """
 import argparse
 import glob
 import json
 import os
 import sys
+from datetime import date, datetime, timezone
+from itertools import combinations
+
+import pandas as pd
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
-TRACKER_DIR = os.path.join(PROJECT_ROOT, 'artifacts', 'tracker')
 CONFIGS_DIR = os.path.join(PROJECT_ROOT, 'src', 'gbot', 'strategy', 'configs')
+SETTINGS_FILE = os.path.join(PROJECT_ROOT, 'settings.json')
 
 
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
-def load_trackers() -> list:
-    files = sorted(glob.glob(os.path.join(TRACKER_DIR, '*_grid.json')))
-    trackers = []
-    for path in files:
-        try:
-            with open(path) as f:
-                data = json.load(f)
-            trackers.append(data)
-        except Exception as e:
-            print(f"  [WARNUNG] Tracker konnte nicht gelesen werden ({path}): {e}")
-    return trackers
+def sep(char='=', width=68):
+    print(char * width)
 
 
 def load_configs() -> list:
@@ -46,235 +41,413 @@ def load_configs() -> list:
             with open(path) as f:
                 configs.append((os.path.basename(path), json.load(f)))
         except Exception as e:
-            print(f"  [WARNUNG] Config konnte nicht gelesen werden ({path}): {e}")
+            print(f"  [WARNUNG] Config nicht lesbar ({os.path.basename(path)}): {e}")
     return configs
 
 
-def sep(char='=', width=60):
-    print(char * width)
+def _fetch_and_backtest(cfg: dict, start_date: str, end_date: str, capital: float) -> dict:
+    """
+    Laedt OHLCV-Daten, berechnet Fibonacci-Range und fuehrt den Backtest durch.
+    Gibt Backtest-Ergebnis + Fibonacci-Info zurueck oder {'error': ...}.
+    """
+    from gbot.analysis.fibonacci import fetch_ohlcv_public, auto_fib_analysis
+    from gbot.analysis.backtester import run_grid_backtest
+
+    sym = cfg['market']['symbol']
+    fib_cfg = cfg['grid'].get('fibonacci', {})
+    tf = fib_cfg.get('timeframe', '4h')
+    lookback_fib = fib_cfg.get('lookback', 200)
+    num_grids = cfg['grid']['num_grids']
+    leverage = cfg['risk'].get('leverage', 1)
+
+    # OHLCV fuer Backtest-Zeitraum laden
+    try:
+        from gbot.analysis.optimizer import LOOKBACK_BY_TF, DEFAULT_LOOKBACK
+        lookback_full = LOOKBACK_BY_TF.get(tf, DEFAULT_LOOKBACK)
+        df = fetch_ohlcv_public(sym, tf, lookback_full)
+        df = df[df.index >= start_date]
+        df = df[df.index <= end_date]
+        if len(df) < 10:
+            return {'error': f'Zu wenige Kerzen ({len(df)}) im Zeitraum'}
+    except Exception as e:
+        return {'error': f'Datenabruf fehlgeschlagen: {e}'}
+
+    # Fibonacci-Range aus aktuellen Daten
+    try:
+        analysis = auto_fib_analysis(
+            symbol=sym,
+            timeframe=tf,
+            lookback=lookback_fib,
+            swing_window=fib_cfg.get('swing_window', 10),
+            prefer_golden_zone=fib_cfg.get('prefer_golden_zone', False),
+        )
+        lower = analysis['suggested_range']['lower_price']
+        upper = analysis['suggested_range']['upper_price']
+        lower_label = analysis['suggested_range']['lower_label']
+        upper_label = analysis['suggested_range']['upper_label']
+    except Exception as e:
+        return {'error': f'Fibonacci fehlgeschlagen: {e}'}
+
+    result = run_grid_backtest(
+        df=df,
+        lower=lower,
+        upper=upper,
+        num_grids=num_grids,
+        leverage=leverage,
+        capital=capital,
+    )
+
+    result['symbol'] = sym
+    result['timeframe'] = tf
+    result['lower'] = lower
+    result['upper'] = upper
+    result['lower_label'] = lower_label
+    result['upper_label'] = upper_label
+    result['candles'] = len(df)
+    result['fib_analysis'] = analysis
+    return result
 
 
-def header(title: str):
+# ---------------------------------------------------------------------------
+# Modus 1: Einzel-Analyse
+# ---------------------------------------------------------------------------
+
+def run_single_analysis(start_date: str, end_date: str, capital: float):
     sep()
-    print(f"  {title}")
+    print("  gbot Einzel-Analyse — jede Strategie isoliert getestet")
     sep()
-
-
-# ---------------------------------------------------------------------------
-# Modus 1: Grid Status Uebersicht
-# ---------------------------------------------------------------------------
-
-def mode_1_status():
-    header("Modus 1 — Grid Status Uebersicht")
-
-    trackers = load_trackers()
-    configs = load_configs()
-
-    if not trackers and not configs:
-        print("\n  Keine Tracker- oder Config-Dateien gefunden.")
-        print("  Starte zuerst ./run_pipeline.sh um ein Grid zu konfigurieren.")
-        return
-
-    # Configs anzeigen (was konfiguriert ist)
-    print(f"\n  Konfigurierte Grids ({len(configs)}):")
-    print(f"  {'Symbol':<25} {'Modus':<10} {'Bereich':<25} {'Stufen':>6} {'Kapital':>10} {'Hebel':>6}")
-    print("  " + "-" * 82)
-    for filename, cfg in configs:
-        sym = cfg.get('market', {}).get('symbol', '?')
-        g = cfg.get('grid', {})
-        r = cfg.get('risk', {})
-        mode_str = g.get('grid_mode', '?').upper()
-        bereich = f"{g.get('lower_price','?')} - {g.get('upper_price','?')}"
-        stufen = g.get('num_grids', '?')
-        kapital = f"{r.get('total_investment_usdt','?')} USDT"
-        hebel = f"{r.get('leverage','?')}x"
-        print(f"  {sym:<25} {mode_str:<10} {bereich:<25} {stufen:>6} {kapital:>10} {hebel:>6}")
-
-    # Aktive Tracker anzeigen
-    print(f"\n  Aktive Tracker ({len(trackers)}):")
-    for t in trackers:
-        symbol = t.get('symbol', 'Unbekannt')
-        init = t.get('initialized', False)
-        gc = t.get('grid_config', {})
-        perf = t.get('performance', {})
-        orders = t.get('active_orders', {})
-
-        print(f"\n  Symbol  : {symbol}")
-        print(f"  Status  : {'AKTIV' if init else 'NICHT INITIALISIERT'}")
-        if gc:
-            spacing_pct = gc.get('spacing', 0) / ((gc.get('lower_price', 1) + gc.get('upper_price', 1)) / 2) * 100
-            print(f"  Grid    : {gc.get('lower_price')} – {gc.get('upper_price')} | {gc.get('num_grids')} Stufen | {gc.get('mode','?').upper()}")
-            print(f"  Spacing : {gc.get('spacing', 0):.4f} ({spacing_pct:.3f}%)")
-        pnl = perf.get('realized_pnl_usdt', 0.0)
-        fills = perf.get('total_fills', 0)
-        print(f"  Orders  : {len(orders)} offen  |  Fills: {fills}  |  PnL: {'+' if pnl >= 0 else ''}{pnl:.4f} USDT")
-    sep('-')
-
-
-# ---------------------------------------------------------------------------
-# Modus 2: Order-Analyse nach Grid-Level
-# ---------------------------------------------------------------------------
-
-def mode_2_orders():
-    header("Modus 2 — Order-Analyse nach Grid-Levels")
-
-    trackers = load_trackers()
-    if not trackers:
-        print("\n  Keine Tracker-Dateien gefunden.")
-        return
-
-    for t in trackers:
-        symbol = t.get('symbol', 'Unbekannt')
-        orders = t.get('active_orders', {})
-        gc = t.get('grid_config', {})
-        levels = gc.get('levels', [])
-
-        print(f"\n  Symbol: {symbol}")
-        print(f"  {'Preis':>15}  {'Side':<6}  {'Order-ID':<30}  {'Platziert'}")
-        print("  " + "-" * 75)
-
-        if not orders:
-            print("  (keine offenen Orders im Tracker)")
-        else:
-            # Sortiert nach Preis (absteigend = höchste zuerst)
-            for price_key in sorted(orders.keys(), key=float, reverse=True):
-                o = orders[price_key]
-                side = o.get('side', '?').upper()
-                oid = o.get('order_id', '—')[:28]
-                placed = o.get('placed_at', '—')[:19]
-                price = float(price_key)
-                # Liegt dieser Level innerhalb des Grid-Bereichs?
-                in_range = gc.get('lower_price', 0) <= price <= gc.get('upper_price', 1e12)
-                marker = '' if in_range else ' [!]'
-                print(f"  {price:>15,.4f}  {side:<6}  {oid:<30}  {placed}{marker}")
-
-        buy_count = sum(1 for o in orders.values() if o.get('side') == 'buy')
-        sell_count = sum(1 for o in orders.values() if o.get('side') == 'sell')
-        print(f"\n  Summe: {buy_count} Buy-Orders, {sell_count} Sell-Orders")
-    sep('-')
-
-
-# ---------------------------------------------------------------------------
-# Modus 3: Performance & PnL
-# ---------------------------------------------------------------------------
-
-def mode_3_performance():
-    header("Modus 3 — Performance & PnL Analyse")
-
-    trackers = load_trackers()
-    if not trackers:
-        print("\n  Keine Tracker-Dateien gefunden.")
-        return
-
-    total_pnl = 0.0
-    total_fills = 0
-
-    for t in trackers:
-        symbol = t.get('symbol', 'Unbekannt')
-        gc = t.get('grid_config', {})
-        perf = t.get('performance', {})
-        init_at = t.get('initialized_at', '—')
-
-        pnl = perf.get('realized_pnl_usdt', 0.0)
-        fees = perf.get('fee_paid_usdt', 0.0)
-        fills = perf.get('total_fills', 0)
-        buy_fills = perf.get('buy_fills', 0)
-        sell_fills = perf.get('sell_fills', 0)
-        last_fill = perf.get('last_fill_at', '—')
-        investment = gc.get('total_investment_usdt', 1.0) or 1.0
-
-        # ROI
-        roi_pct = (pnl / investment) * 100
-
-        # Durchschnittlicher Gewinn pro Zyklus
-        completed_cycles = sell_fills  # Jeder Sell = ein abgeschlossener Kauf-Verkauf-Zyklus
-        avg_pnl_per_cycle = (pnl / completed_cycles) if completed_cycles > 0 else 0.0
-
-        print(f"\n  Symbol          : {symbol}")
-        print(f"  Gestartet       : {init_at[:19] if init_at else '—'}")
-        print(f"  Grid-Modus      : {gc.get('mode','?').upper()}")
-        print(f"  Kapital         : {investment:.2f} USDT ({gc.get('leverage','?')}x Hebel)")
-        print()
-        print(f"  Fills gesamt    : {fills}")
-        print(f"    Buy-Fills     : {buy_fills}")
-        print(f"    Sell-Fills    : {sell_fills} (abgeschlossene Zyklen)")
-        print(f"  Letzter Fill    : {last_fill[:19] if last_fill and last_fill != '—' else '—'}")
-        print()
-        pnl_str = f"+{pnl:.4f}" if pnl >= 0 else f"{pnl:.4f}"
-        roi_str = f"+{roi_pct:.3f}%" if roi_pct >= 0 else f"{roi_pct:.3f}%"
-        print(f"  Realized PnL    : {pnl_str} USDT")
-        print(f"  ROI             : {roi_str}")
-        print(f"  Gezahlte Fees   : {fees:.4f} USDT")
-        print(f"  PnL/Zyklus (Ø)  : {avg_pnl_per_cycle:.4f} USDT")
-
-        total_pnl += pnl
-        total_fills += fills
-
-    sep('-')
-    print(f"\n  GESAMT-PnL alle Grids : {'+' if total_pnl >= 0 else ''}{total_pnl:.4f} USDT")
-    print(f"  GESAMT-Fills          : {total_fills}")
-    sep('-')
-
-
-# ---------------------------------------------------------------------------
-# Modus 4: Fibonacci-Analyse
-# ---------------------------------------------------------------------------
-
-def mode_4_fibonacci():
-    header("Modus 4 — Fibonacci-Analyse (aktueller Range)")
+    print(f"  Zeitraum: {start_date} bis {end_date} | Kapital: {capital} USDT\n")
 
     configs = load_configs()
     if not configs:
-        print("\n  Keine Config-Dateien gefunden.")
-        print("  Starte zuerst ./run_pipeline.sh um Symbole zu konfigurieren.")
+        print("  Keine Config-Dateien gefunden. Bitte ./run_pipeline.sh ausfuehren.")
+        return
+
+    all_results = []
+    for filename, cfg in configs:
+        sym = cfg['market']['symbol']
+        print(f"  Analysiere: {sym} ...", end=' ', flush=True)
+        r = _fetch_and_backtest(cfg, start_date, end_date, capital)
+        if r.get('error'):
+            print(f"FEHLER: {r['error']}")
+            continue
+        print(f"OK ({r['candles']} Kerzen)")
+        all_results.append({
+            'Strategie': f"{sym} ({r['timeframe']})",
+            'Grids': r['num_grids'],
+            'Hebel': f"{r['leverage']}x",
+            'Fills': r['total_fills'],
+            'ROI %': r['roi_pct'],
+            'Max DD %': r['max_drawdown_pct'],
+            'PnL USDT': r['total_pnl_usdt'],
+            'Range': f"{r['lower_label']}–{r['upper_label']}",
+        })
+
+    if not all_results:
+        print("\n  Keine gueltigen Ergebnisse.")
+        return
+
+    df = pd.DataFrame(all_results).sort_values('ROI %', ascending=False)
+    pd.set_option('display.width', 140)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.float_format', '{:.2f}'.format)
+    sep()
+    print(df.to_string(index=False))
+    sep()
+
+
+# ---------------------------------------------------------------------------
+# Modus 2: Manuelle Portfolio-Simulation
+# ---------------------------------------------------------------------------
+
+def run_manual_portfolio(start_date: str, end_date: str, capital: float):
+    sep()
+    print("  gbot Manuelle Portfolio-Simulation")
+    sep()
+
+    configs = load_configs()
+    if not configs:
+        print("  Keine Config-Dateien gefunden.")
+        return
+
+    print("\n  Verfuegbare Strategien:")
+    for i, (filename, cfg) in enumerate(configs):
+        sym = cfg['market']['symbol']
+        tf = cfg['grid'].get('fibonacci', {}).get('timeframe', '?')
+        print(f"    {i+1}) {sym} ({tf})")
+
+    selection = input("\n  Welche Strategien simulieren? (Zahlen mit Komma, z.B. 1,3 oder 'alle'): ").strip()
+    if selection.lower() == 'alle':
+        selected = configs
+    else:
+        try:
+            indices = [int(x.strip()) - 1 for x in selection.split(',')]
+            selected = [configs[i] for i in indices]
+        except (ValueError, IndexError):
+            print("  Ungueltige Auswahl.")
+            return
+
+    print(f"\n  Zeitraum: {start_date} bis {end_date} | Kapital pro Grid: {capital} USDT\n")
+
+    results = []
+    total_capital = capital * len(selected)
+    total_pnl = 0.0
+    total_fills = 0
+
+    for filename, cfg in selected:
+        sym = cfg['market']['symbol']
+        print(f"  Backtest: {sym} ...", end=' ', flush=True)
+        r = _fetch_and_backtest(cfg, start_date, end_date, capital)
+        if r.get('error'):
+            print(f"FEHLER: {r['error']}")
+            continue
+        print(f"ROI: {r['roi_pct']:+.2f}%")
+        results.append(r)
+        total_pnl += r['total_pnl_usdt']
+        total_fills += r['total_fills']
+
+    if not results:
+        print("\n  Keine gueltigen Ergebnisse.")
+        return
+
+    portfolio_roi = (total_pnl / total_capital * 100) if total_capital > 0 else 0
+    max_dd = max(r['max_drawdown_pct'] for r in results)
+
+    sep()
+    print("  Portfolio-Simulations-Ergebnis")
+    sep('-')
+    for r in results:
+        pnl_str = f"{r['total_pnl_usdt']:+.4f}"
+        print(f"  {r['symbol']:<22} ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  PnL: {pnl_str} USDT  Fills: {r['total_fills']}")
+    sep('-')
+    print(f"  Gesamt-Kapital   : {total_capital:.2f} USDT")
+    print(f"  Gesamt-PnL       : {total_pnl:+.4f} USDT")
+    print(f"  Portfolio ROI    : {portfolio_roi:+.2f}%")
+    print(f"  Hoechster Max DD : {max_dd:.2f}%")
+    print(f"  Gesamt-Fills     : {total_fills}")
+    sep()
+
+
+# ---------------------------------------------------------------------------
+# Modus 3: Automatische Portfolio-Optimierung
+# ---------------------------------------------------------------------------
+
+def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_max_dd: float):
+    sep()
+    print("  gbot Automatische Portfolio-Optimierung")
+    sep()
+    print(f"  Ziel: Maximaler ROI bei maximal {target_max_dd:.1f}% Drawdown pro Grid.")
+    print(f"  Zeitraum: {start_date} bis {end_date} | Kapital pro Grid: {capital} USDT\n")
+
+    configs = load_configs()
+    if not configs:
+        print("  Keine Config-Dateien gefunden.")
+        return
+
+    # Schritt 1: Alle Configs einzeln backtesten
+    individual = []
+    for filename, cfg in configs:
+        sym = cfg['market']['symbol']
+        print(f"  Backtest: {sym} ...", end=' ', flush=True)
+        r = _fetch_and_backtest(cfg, start_date, end_date, capital)
+        if r.get('error'):
+            print(f"FEHLER: {r['error']}")
+            continue
+        print(f"ROI: {r['roi_pct']:+.2f}%  DD: {r['max_drawdown_pct']:.2f}%")
+        individual.append((filename, cfg, r))
+
+    if not individual:
+        print("\n  Keine gueltigen Ergebnisse.")
+        return
+
+    # Schritt 2: Beste Kombination finden (bis 5er-Teams)
+    best_roi = -9999.0
+    best_team = []
+    best_stats = {}
+
+    max_team_size = min(5, len(individual))
+    total_combos = sum(len(list(combinations(individual, k))) for k in range(1, max_team_size + 1))
+    print(f"\n  Pruefe {total_combos} Portfolio-Kombinationen...")
+
+    for size in range(1, max_team_size + 1):
+        for combo in combinations(individual, size):
+            valid = all(r['max_drawdown_pct'] <= target_max_dd for _, _, r in combo)
+            valid = valid and all(r['roi_pct'] > -9999 for _, _, r in combo)
+            if not valid:
+                continue
+            total_pnl = sum(r['total_pnl_usdt'] for _, _, r in combo)
+            total_cap = capital * size
+            roi = total_pnl / total_cap * 100
+            max_dd = max(r['max_drawdown_pct'] for _, _, r in combo)
+            if roi > best_roi:
+                best_roi = roi
+                best_team = combo
+                best_stats = {
+                    'total_pnl': total_pnl,
+                    'total_capital': total_cap,
+                    'roi': roi,
+                    'max_dd': max_dd,
+                    'fills': sum(r['total_fills'] for _, _, r in combo),
+                }
+
+    sep()
+    if not best_team:
+        print(f"  Kein Portfolio gefunden, das Max Drawdown <= {target_max_dd:.1f}% erfuellt.")
+        print("  Versuche einen hoeher Drawdown-Wert oder mehr Trials.")
+        sep()
+        return
+
+    print(f"  Optimales Team gefunden ({len(best_team)} Strategien):")
+    sep('-')
+    for filename, cfg, r in best_team:
+        sym = r['symbol']
+        print(f"  {sym:<22}  ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  Fills: {r['total_fills']}")
+    sep('-')
+    print(f"  Gesamt-Kapital   : {best_stats['total_capital']:.2f} USDT")
+    print(f"  Gesamt-PnL       : {best_stats['total_pnl']:+.4f} USDT")
+    print(f"  Portfolio ROI    : {best_stats['roi']:+.2f}%")
+    print(f"  Hoechster Max DD : {best_stats['max_dd']:.2f}%")
+    print(f"  Gesamt-Fills     : {best_stats['fills']}")
+    sep()
+
+    # Ergebnis speichern fuer Shell-Nachbearbeitung
+    opt_result = {
+        'optimal_portfolio': [filename for filename, _, _ in best_team],
+        'stats': best_stats,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+    }
+    results_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
+    os.makedirs(results_dir, exist_ok=True)
+    out_path = os.path.join(results_dir, 'optimization_results.json')
+    with open(out_path, 'w') as f:
+        json.dump(opt_result, f, indent=2)
+    print(f"  Ergebnis gespeichert: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Modus 4: Interaktive Charts (ASCII — Fibonacci Zonen + Grid-Levels)
+# ---------------------------------------------------------------------------
+
+def run_fibonacci_charts():
+    sep()
+    print("  gbot Interaktive Charts — Fibonacci-Zonen + Grid-Levels")
+    sep()
+
+    configs = load_configs()
+    if not configs:
+        print("  Keine Config-Dateien gefunden.")
         return
 
     try:
         from gbot.analysis.fibonacci import auto_fib_analysis
     except ImportError as e:
-        print(f"\n  Fehler: fibonacci-Modul nicht verfuegbar: {e}")
+        print(f"  Fehler: {e}")
         return
 
     for filename, cfg in configs:
-        sym = cfg.get('market', {}).get('symbol', '?')
-        fib_cfg = cfg.get('grid', {}).get('fibonacci', {})
-        timeframe = fib_cfg.get('timeframe', '4h')
+        sym = cfg['market']['symbol']
+        fib_cfg = cfg['grid'].get('fibonacci', {})
+        tf = fib_cfg.get('timeframe', '4h')
         lookback = fib_cfg.get('lookback', 200)
-        swing_window = fib_cfg.get('swing_window', 10)
-        prefer_golden = fib_cfg.get('prefer_golden_zone', False)
+        num_grids = cfg['grid']['num_grids']
 
-        print(f"\n  Symbol: {sym} | Zeitfenster: {timeframe} | Lookback: {lookback} Kerzen")
-        print("  " + "-" * 56)
+        print(f"\n  Symbol: {sym} | Zeitfenster: {tf}")
+        print("  " + "-" * 64)
+
         try:
             analysis = auto_fib_analysis(
                 symbol=sym,
-                timeframe=timeframe,
+                timeframe=tf,
                 lookback=lookback,
-                swing_window=swing_window,
-                prefer_golden_zone=prefer_golden,
+                swing_window=fib_cfg.get('swing_window', 10),
+                prefer_golden_zone=fib_cfg.get('prefer_golden_zone', False),
             )
-            swing = analysis['swing_points']
-            fib = analysis['fib_levels']
-            suggested = analysis['suggested_range']
-            current = analysis['current_price']
-
-            print(f"  Aktueller Preis : {current:,.4f}")
-            print(f"  Swing High      : {swing['swing_high']:,.4f}")
-            print(f"  Swing Low       : {swing['swing_low']:,.4f}")
-            print(f"  Trend           : {swing['trend'].upper()}")
-            print(f"  In Goldener Zone: {'JA' if suggested['in_golden_zone'] else 'NEIN'}")
-            print()
-            print(f"  Vorgeschlagener Grid-Bereich:")
-            print(f"    Unten ({suggested['lower_label']}): {suggested['lower_price']:,.4f}")
-            print(f"    Oben  ({suggested['upper_label']}): {suggested['upper_price']:,.4f}")
-            width = suggested['upper_price'] - suggested['lower_price']
-            width_pct = width / current * 100 if current > 0 else 0
-            print(f"    Breite: {width:,.4f} ({width_pct:.2f}% vom Preis)")
-
         except Exception as e:
-            print(f"  Fehler bei Fibonacci-Analyse: {e}")
+            print(f"  Fehler: {e}")
+            continue
 
-    sep('-')
+        fib = analysis['fib_levels']
+        suggested = analysis['suggested_range']
+        current = analysis['current_price']
+        swing = analysis['swing_points']
+
+        lower = suggested['lower_price']
+        upper = suggested['upper_price']
+        spacing = (upper - lower) / num_grids if num_grids > 0 else 0
+
+        # Chart-Grenzen
+        chart_low = min(fib.values()) * 0.995
+        chart_high = max(fib.values()) * 1.005
+        chart_range = chart_high - chart_low
+        width = 48
+
+        def to_col(price):
+            if chart_range == 0:
+                return 0
+            return int((price - chart_low) / chart_range * width)
+
+        # Alle relevanten Level sammeln und sortieren (hoch → niedrig)
+        levels_to_draw = []
+        for label, price in sorted(fib.items(), key=lambda x: x[1], reverse=True):
+            levels_to_draw.append(('FIB', label, price))
+
+        # Grid-Levels hinzufuegen
+        for i in range(num_grids + 1):
+            gp = lower + i * spacing
+            levels_to_draw.append(('GRID', f'G{i}', gp))
+
+        # Preis und Marker
+        levels_to_draw.append(('PRICE', 'NOW', current))
+        levels_to_draw.sort(key=lambda x: x[2], reverse=True)
+
+        print(f"  {'Typ':<5} {'Level':<8} {'Preis':>14}  {'Chart'}")
+        print("  " + "-" * 64)
+
+        for kind, label, price in levels_to_draw:
+            col = to_col(price)
+            bar = ' ' * col
+
+            if kind == 'PRICE':
+                marker = f"{bar}◆ PREIS"
+                tag = f"  {'NOW':<5} {'aktuell':<8} {price:>14,.4f}  {marker}"
+            elif kind == 'GRID':
+                is_lower = abs(price - lower) < 0.001
+                is_upper = abs(price - upper) < 0.001
+                if is_lower:
+                    marker = f"{bar}|←  GRID UNTEN ({suggested['lower_label']})"
+                elif is_upper:
+                    marker = f"{bar}|←  GRID OBEN ({suggested['upper_label']})"
+                else:
+                    marker = f"{bar}·"
+                tag = f"  {'GRID':<5} {label:<8} {price:>14,.4f}  {marker}"
+            else:
+                is_lower = label == suggested['lower_label']
+                is_upper = label == suggested['upper_label']
+                in_golden = label in ('38.2%', '61.8%')
+                if is_lower or is_upper:
+                    marker = f"{bar}█ {label}"
+                elif in_golden:
+                    marker = f"{bar}▓ {label} (Goldene Zone)"
+                else:
+                    marker = f"{bar}░ {label}"
+                tag = f"  {'FIB':<5} {label:<8} {price:>14,.4f}  {marker}"
+
+            print(tag)
+
+        # Zusammenfassung
+        in_range = lower <= current <= upper
+        dist_lower = (current - lower) / current * 100
+        dist_upper = (upper - current) / current * 100
+        print()
+        print(f"  Trend           : {swing['trend'].upper()}")
+        print(f"  Swing High      : {swing['swing_high']:,.4f}")
+        print(f"  Swing Low       : {swing['swing_low']:,.4f}")
+        print(f"  In Grid-Range   : {'JA' if in_range else 'NEIN — Rebalancing wird ausgeloest'}")
+        if in_range:
+            print(f"  Abstand Unten   : {dist_lower:.2f}%  |  Abstand Oben: {dist_upper:.2f}%")
+        print(f"  Grid-Spacing    : {spacing:,.4f} ({spacing/current*100:.3f}% vom Preis)")
+
+    sep()
 
 
 # ---------------------------------------------------------------------------
@@ -283,29 +456,36 @@ def mode_4_fibonacci():
 
 def main():
     parser = argparse.ArgumentParser(description="gbot Analyse-Tool")
-    parser.add_argument('--mode', type=int, default=None, help="Modus 1-4")
+    parser.add_argument('--mode', type=str, default='1', choices=['1', '2', '3', '4'])
+    parser.add_argument('--start_date', type=str, default=None)
+    parser.add_argument('--end_date', type=str, default=None)
+    parser.add_argument('--capital', type=float, default=None)
+    parser.add_argument('--target_max_drawdown', type=float, default=30.0)
     args = parser.parse_args()
 
     mode = args.mode
-    if mode is None:
-        print("\nWaehle einen Analyse-Modus:")
-        print("  1) Grid Status Uebersicht")
-        print("  2) Order-Analyse nach Grid-Levels")
-        print("  3) Performance & PnL Analyse")
-        print("  4) Fibonacci-Analyse (aktueller Range fuer alle Symbole)")
-        try:
-            raw = input("Auswahl (1-4) [Standard: 1]: ").strip()
-            mode = int(raw) if raw else 1
-        except (ValueError, EOFError):
-            mode = 1
 
-    modes = {1: mode_1_status, 2: mode_2_orders, 3: mode_3_performance, 4: mode_4_fibonacci}
-    func = modes.get(mode)
-    if func:
-        func()
-    else:
-        print(f"Ungueltiger Modus: {mode}. Bitte 1-4 eingeben.")
-        sys.exit(1)
+    # Modus 4 braucht keine Datumseingabe
+    if mode == '4':
+        run_fibonacci_charts()
+        return
+
+    # Datum und Kapital abfragen
+    start_date = args.start_date or input("  Startdatum (JJJJ-MM-TT) [Standard: 2023-01-01]: ").strip() or "2023-01-01"
+    end_date = args.end_date or input(f"  Enddatum   (JJJJ-MM-TT) [Standard: Heute]:      ").strip() or date.today().strftime("%Y-%m-%d")
+    cap_input = args.capital
+    if cap_input is None:
+        raw = input("  Kapital pro Grid in USDT       [Standard: 100]:   ").strip()
+        cap_input = float(raw) if raw else 100.0
+
+    print()
+
+    if mode == '1':
+        run_single_analysis(start_date, end_date, cap_input)
+    elif mode == '2':
+        run_manual_portfolio(start_date, end_date, cap_input)
+    elif mode == '3':
+        run_auto_portfolio(start_date, end_date, cap_input, args.target_max_drawdown)
 
 
 if __name__ == '__main__':
