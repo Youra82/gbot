@@ -276,6 +276,14 @@ def create_chart(symbol: str, timeframe: str, df: pd.DataFrame,
     pnl_df = _filter(pnl_df)
     fills_df = _filter(fills_df)
 
+    # Kontostand auf Eingabe-Kapital normalisieren (Simulation laeuft ab dem ersten Datenpunkt,
+    # aber der Chart-Zeitraum kann spaeter beginnen → Offset entfernen)
+    if not pnl_df.empty and 'capital' in pnl_df.columns:
+        offset = pnl_df['capital'].iloc[0] - capital
+        pnl_df = pnl_df.copy()
+        pnl_df['capital'] = pnl_df['capital'] - offset
+        pnl_df['pnl']     = pnl_df['capital'] - capital
+
     if df.empty:
         logger.warning(f"Keine Daten im Zeitraum fuer {symbol}")
         return None
