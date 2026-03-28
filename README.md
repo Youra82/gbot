@@ -250,6 +250,58 @@ git push origin main
 
 ---
 
+## Coin & Timeframe Empfehlungen
+
+GBot ist eine **Grid-Trading-Strategie mit Fibonacci-Kalibrierung** — er berechnet aus dem historischen Swing-High/-Low ein Fibonacci-Gitter und platziert automatisch Buy-/Sell-Orders auf mehreren Levels. Benötigt: einen stabilen Preisnbereich (Ranging-Markt), hohe Liquidität für schnelle Order-Fills und ausreichend historische Daten für die Fibonacci-Berechnung.
+
+### Marktregime-Abhängigkeit
+
+| Marktphase | Grid-Performance | Fibonacci-Stabilität | Empfehlung |
+|---|---|---|---|
+| **Seitwärts / Ranging** | Exzellent — Grid läuft durch | Stabil, klare Bounds | ✅✅ Ideal |
+| **Leichter Uptrend** | Gut — Long-Orders füllen öfter | Leichte Verschiebung oben | ✅ Gut |
+| **Leichter Downtrend** | Gut — Short-Orders füllen öfter | Leichte Verschiebung unten | ✅ Gut |
+| **Starker Trend (Breakout)** | Schlecht — Grid wird verlassen | Grid komplett invalide | ❌ Rebuild nötig |
+| **Extremer Pump/Dump** | Sehr schlecht — alle Orders auf einer Seite | Fibonacci bricht | ❌❌ Stop-Loss |
+
+> Bei Breakout aus dem Grid wird Fibonacci automatisch neu berechnet und das Grid rebuilt.
+
+### Coin-Eignung
+
+| Coin | Ranging-Anteil | Liquidität für Grid-Fills | Rebuild-Häufigkeit | Bewertung |
+|---|---|---|---|---|
+| **BTC** | Hoch in Konsolidierung (40-50% der Zeit) | Höchste Liquidität — beste Fills | Moderat | ✅✅ Beste Wahl |
+| **ETH** | Gut — ähnlich BTC | Sehr hohe Liquidität | Moderat | ✅✅ Sehr gut |
+| **BNB** | Sehr gut — häufige Ranging-Phasen | Hohe Liquidität | Niedrig | ✅ Gut |
+| **XRP** | Gut — lange Seitwärtsphasen | Hohe Liquidität | Niedrig | ✅ Gut |
+| **LTC** | Gut — BTC-korreliert, häufiges Ranging | Gute Liquidität | Moderat | ✅ Gut |
+| **ADA** | Gut — sehr lange Ranging-Phasen | Ausreichende Liquidität | Niedrig | ✅ Gut |
+| **SOL** | Mittel — trendet oft stark | Hohe Liquidität | Hoch (viele Breakouts) | ⚠️ Mittel |
+| **AVAX** | Mittel — Breakouts häufig | Ausreichend | Hoch | ⚠️ Mittel |
+| **ARB** | Mittel — ETH-korreliert, junger Markt | Ausreichend | Mittel-hoch | ⚠️ Mittel |
+| **LINK** | Mittel — explosive Trends | Ausreichend | Hoch | ⚠️ Mittel |
+| **DOT** | Mittel — sehr lange Bärenphasen | Mittel | Niedrig aber träge | ⚠️ Mittel |
+| **DOGE** | Schlecht — sentiment-getrieben | Hoch aber unvorhersehbar | Sehr häufig | ❌ Schlecht |
+| **SHIB/PEPE** | Nicht geeignet | Ausreichend aber kaum sinnvoll | Konstant | ❌❌ Nicht geeignet |
+
+### Empfohlene Kombinationen (Ranking)
+
+| Rang | Coin | Begründung |
+|---|---|---|
+| 🥇 1 | **BTC (neutral mode)** | Häufige Ranging-Phasen, höchste Liquidität für Grid-Fills, gut vorhersehbare Fibonacci-Bounds |
+| 🥇 1 | **ETH (neutral mode)** | Ähnlich BTC, sehr häufige Konsolidierungsphasen |
+| 🥈 2 | **BNB (neutral mode)** | Stabiles Ranging-Verhalten, niedrige Rebuild-Rate |
+| 🥈 2 | **XRP (neutral mode)** | Sehr lange Seitwärtsphasen — Grid läuft wochenlang |
+| 🥉 3 | **LTC (neutral mode)** | BTC-korreliert, moderates Ranging |
+| 4 | **ADA (neutral mode)** | Sehr lange Ranging-Phasen, wenig Rebuilds |
+| ❌ | **SOL / AVAX / LINK** | Zu viele Breakouts → häufige Grid-Rebuilds fressen Profit |
+| ❌ | **DOGE / SHIB** | Sentiment-getriebene Pumps zerstören das Grid sofort |
+
+> **Hinweis:** Grid-Trading benötigt **kein spezifisches Timeframe** — das Grid ist preis- nicht zeitbasiert. Der historische Lookback für die Fibonacci-Berechnung sollte mindestens 90 Tage umfassen.
+
+
+---
+
 ### ⚠️ Disclaimer
 
 Dieses Material dient ausschließlich zu Bildungs- und Unterhaltungszwecken. Es handelt sich nicht um eine Finanzberatung. Der Nutzer trägt die alleinige Verantwortung für alle Handlungen. Der Autor haftet nicht für etwaige Verluste. Trading mit Krypto-Futures beinhaltet ein hohes Risiko.
