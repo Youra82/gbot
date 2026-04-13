@@ -57,11 +57,12 @@ def _make_exchange():
         try:
             with open(SECRET_PATH, 'r') as f:
                 secrets = json.load(f)
-            api = secrets.get('gbot', [{}])[0]
-            if api.get('apiKey'):
-                opts['apiKey'] = api['apiKey']
-                opts['secret'] = api['secret']
-                opts['password'] = api.get('password', '')
+            api = secrets.get('gbot', {})
+            key = api.get('api_key') or api.get('apiKey')
+            if key:
+                opts['apiKey'] = key
+                opts['secret'] = api.get('secret')
+                opts['password'] = api.get('passphrase', api.get('password', ''))
         except Exception:
             pass
     return ccxt.bitget(opts)

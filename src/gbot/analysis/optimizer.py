@@ -57,7 +57,7 @@ LEVERAGE_MAX = 20
 
 # Fibonacci-Parameter (fest — wie Live-Bot)
 FIB_SWING_WINDOW = 10
-FIB_PREFER_GOLDEN_ZONE = False
+FIB_PREFER_GOLDEN_ZONE = True
 FIB_REBALANCE_ON_BREAK = True
 FIB_MIN_REBALANCE_HOURS = 4
 
@@ -189,6 +189,10 @@ def run_optimization(
     def objective(trial):
         num_grids = trial.suggest_int('num_grids', NUM_GRIDS_MIN, NUM_GRIDS_MAX)
         leverage = trial.suggest_int('leverage', LEVERAGE_MIN, LEVERAGE_MAX)
+
+        # Bitget min notional: 5 USDT pro Grid-Order (Hebel kürzt sich raus)
+        if capital / num_grids < 5.0:
+            return -9999.0
 
         r = _run_sim(num_grids, leverage)
         if r is None:

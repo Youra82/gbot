@@ -15,7 +15,7 @@
             },
             {
                 "symbol": "SOL/USDT:USDT",
-                "active": true
+                "active": false
             },
             {
                 "symbol": "ADA/USDT:USDT",
@@ -27,7 +27,7 @@
             },
             {
                 "symbol": "DOGE/USDT:USDT",
-                "active": true
+                "active": false
             }
         ]
     }

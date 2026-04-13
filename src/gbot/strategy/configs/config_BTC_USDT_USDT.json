@@ -10,7 +10,7 @@
             "timeframe": "6h",
             "lookback": 200,
             "swing_window": 10,
-            "prefer_golden_zone": false,
+            "prefer_golden_zone": true,
             "rebalance_on_break": true,
             "min_rebalance_interval_hours": 4
         }
