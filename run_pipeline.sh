@@ -73,7 +73,7 @@ if [ "$OPTIM_MODE" == "1" ]; then
 else
     OPTIM_MODE_ARG="best_profit"
 fi
-read -p "Max Drawdown % [Standard: 30]: " MAX_DD; MAX_DD=${MAX_DD:-30}
+read -p "Max Drawdown % [Standard: 20]: " MAX_DD; MAX_DD=${MAX_DD:-20}
 
 # --- Pipeline starten ---
 for SYMBOL in $SYMBOLS; do

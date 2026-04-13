@@ -53,7 +53,7 @@ DEFAULT_LOOKBACK = 1095
 NUM_GRIDS_MIN = 2
 NUM_GRIDS_MAX = 25
 LEVERAGE_MIN = 1
-LEVERAGE_MAX = 20
+LEVERAGE_MAX = 5
 
 # Fibonacci-Parameter (fest — wie Live-Bot)
 FIB_SWING_WINDOW = 10
@@ -177,6 +177,8 @@ def run_optimization(
         total_fills = len(fills_df)
         total_pnl = float(pnl_df['pnl'].iloc[-1])
         spacing = epochs[0]['spacing'] if epochs else 0.0
+        rebalances = len(epochs)
+        fills_per_rebalance = total_fills / max(rebalances, 1)
 
         return {
             'roi_pct': roi_pct,
@@ -184,6 +186,8 @@ def run_optimization(
             'total_fills': total_fills,
             'total_pnl_usdt': total_pnl,
             'spacing': spacing,
+            'rebalances': rebalances,
+            'fills_per_rebalance': fills_per_rebalance,
         }
 
     def objective(trial):
@@ -200,6 +204,12 @@ def run_optimization(
         if r['max_drawdown_pct'] >= 100.0:
             return -9999.0
         if r['max_drawdown_pct'] > max_drawdown:
+            return -9999.0
+        # Mindestens 30 Fills — weniger ist statistisch bedeutungslos
+        if r['total_fills'] < 30:
+            return -9999.0
+        # Mindestens 3 Fills pro Rebalancing — Grid das staendig rebuildet wird verdient nichts
+        if r['fills_per_rebalance'] < 3.0:
             return -9999.0
 
         return r['roi_pct']
@@ -233,6 +243,8 @@ def run_optimization(
         'total_fills': best_result.get('total_fills', 0),
         'total_pnl_usdt': best_result.get('total_pnl_usdt', 0),
         'spacing': best_result.get('spacing', 0),
+        'rebalances': best_result.get('rebalances', 0),
+        'fills_per_rebalance': best_result.get('fills_per_rebalance', 0),
         'lower_price': lower,
         'upper_price': upper,
         'lower_label': lower_label,
@@ -335,6 +347,8 @@ def print_result(result: dict):
     print(f"    ROI             : {result['roi_pct']:+.2f}%")
     print(f"    Max Drawdown    : {result['max_drawdown_pct']:.2f}%")
     print(f"    Gesamt-Fills    : {result['total_fills']}")
+    print(f"    Rebalancings    : {result.get('rebalances', '?')}")
+    print(f"    Fills/Rebalance : {result.get('fills_per_rebalance', 0):.1f}")
     print(f"    Gesamt-PnL      : {result['total_pnl_usdt']:+.4f} USDT")
     if result['total_fills'] > 0:
         avg = result['total_pnl_usdt'] / result['total_fills']
