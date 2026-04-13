@@ -59,7 +59,8 @@ LEVERAGE_MAX = 5
 FIB_SWING_WINDOW = 10
 FIB_PREFER_GOLDEN_ZONE = True
 FIB_REBALANCE_ON_BREAK = True
-FIB_MIN_REBALANCE_HOURS = 4
+FIB_MIN_REBALANCE_HOURS_MIN = 4
+FIB_MIN_REBALANCE_HOURS_MAX = 48
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +145,10 @@ def run_optimization(
     mode_desc = "ROI maximieren, kein Rendite-Limit" if mode == 'best_profit' else "streng, ROI + DD-Limit"
     print(f"  Modus           : {mode} ({mode_desc}, {dd_info})")
     print(f"  Optimiere       : {n_trials} Trials | num_grids {NUM_GRIDS_MIN}-{NUM_GRIDS_MAX} | "
-          f"leverage {LEVERAGE_MIN}-{LEVERAGE_MAX}")
+          f"leverage {LEVERAGE_MIN}-{LEVERAGE_MAX} | rebalance {FIB_MIN_REBALANCE_HOURS_MIN}-{FIB_MIN_REBALANCE_HOURS_MAX}h")
 
     # 4. Optuna-Studie
-    def _run_sim(num_grids, leverage):
+    def _run_sim(num_grids, leverage, min_rebalance_hours):
         """Fuehrt dynamische Grid-Simulation durch und gibt (roi_pct, max_dd_pct, fills, pnl, epochs) zurueck."""
         try:
             epochs, pnl_df, fills_df = simulate_dynamic_grid(
@@ -158,7 +159,7 @@ def run_optimization(
                 lookback_fib=fib_lookback,
                 swing_window=FIB_SWING_WINDOW,
                 prefer_golden_zone=FIB_PREFER_GOLDEN_ZONE,
-                min_rebalance_hours=FIB_MIN_REBALANCE_HOURS,
+                min_rebalance_hours=min_rebalance_hours,
             )
         except Exception:
             return None
@@ -193,12 +194,15 @@ def run_optimization(
     def objective(trial):
         num_grids = trial.suggest_int('num_grids', NUM_GRIDS_MIN, NUM_GRIDS_MAX)
         leverage = trial.suggest_int('leverage', LEVERAGE_MIN, LEVERAGE_MAX)
+        min_rebalance_hours = trial.suggest_int(
+            'min_rebalance_hours', FIB_MIN_REBALANCE_HOURS_MIN, FIB_MIN_REBALANCE_HOURS_MAX
+        )
 
         # Bitget min notional: 5 USDT pro Grid-Order (Hebel kürzt sich raus)
         if capital / num_grids < 5.0:
             return -9999.0
 
-        r = _run_sim(num_grids, leverage)
+        r = _run_sim(num_grids, leverage, min_rebalance_hours)
         if r is None:
             return -9999.0
         if r['max_drawdown_pct'] >= 100.0:
@@ -225,7 +229,11 @@ def run_optimization(
 
     # 5. Bestes Ergebnis (nochmal berechnen fuer vollstaendige Metriken)
     best_params = study.best_params
-    best_result = _run_sim(best_params['num_grids'], best_params['leverage']) or {}
+    best_result = _run_sim(
+        best_params['num_grids'],
+        best_params['leverage'],
+        best_params['min_rebalance_hours'],
+    ) or {}
 
     return {
         'symbol': symbol,
@@ -238,6 +246,7 @@ def run_optimization(
         'mode': mode,
         'num_grids': best_params['num_grids'],
         'leverage': best_params['leverage'],
+        'min_rebalance_hours': best_params['min_rebalance_hours'],
         'roi_pct': best_result.get('roi_pct', 0),
         'max_drawdown_pct': best_result.get('max_drawdown_pct', 0),
         'total_fills': best_result.get('total_fills', 0),
@@ -282,7 +291,7 @@ def write_config(result: dict, settings_file: str = None) -> str:
                 "swing_window": FIB_SWING_WINDOW,
                 "prefer_golden_zone": FIB_PREFER_GOLDEN_ZONE,
                 "rebalance_on_break": FIB_REBALANCE_ON_BREAK,
-                "min_rebalance_interval_hours": FIB_MIN_REBALANCE_HOURS,
+                "min_rebalance_interval_hours": result.get('min_rebalance_hours', FIB_MIN_REBALANCE_HOURS_MIN),
             },
         },
         "risk": {
@@ -332,11 +341,12 @@ def print_result(result: dict):
     end = result.get('end_date') or 'heute'
     mode = result.get('mode', 'strict')
     print(f"  Beste Parameter:")
-    print(f"    num_grids  : {result['num_grids']}")
-    print(f"    leverage   : {result['leverage']}x")
-    print(f"    grid_mode  : neutral (immer)")
-    print(f"    margin     : isolated (immer)")
-    print(f"    Modus      : {mode}")
+    print(f"    num_grids          : {result['num_grids']}")
+    print(f"    leverage           : {result['leverage']}x")
+    print(f"    min_rebalance_h    : {result.get('min_rebalance_hours', '?')}h")
+    print(f"    grid_mode          : neutral (immer)")
+    print(f"    margin             : isolated (immer)")
+    print(f"    Modus              : {mode}")
     print('-' * w)
     print(f"  Fibonacci-Range (aktuell):")
     print(f"    Unten  ({result['lower_label']}): {result['lower_price']:,.4f}")
