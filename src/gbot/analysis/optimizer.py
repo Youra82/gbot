@@ -117,10 +117,18 @@ def run_optimization(
         print(f"  Gefiltert bis   : {end_date}")
     print(f"  Backtest-Kerzen : {len(df)}")
 
-    if len(df) < 10:
+    if len(df) < 20:
         raise ValueError(f"Zu wenige Kerzen nach Datumsfilter ({len(df)}). Startdatum anpassen.")
 
-    # 3. Fibonacci-Range bestimmen (auf den letzten 200 Kerzen)
+    # 3. Walk-Forward-Split: 70% Training / 30% Out-of-Sample
+    split_idx = max(50, int(len(df) * 0.70))
+    df_train = df.iloc[:split_idx]
+    df_test  = df.iloc[split_idx:]
+    print(f"  Walk-Forward    : {len(df_train)} Kerzen Training (70%) / {len(df_test)} Kerzen OOS (30%)")
+    print(f"  Training bis    : {df_train.index[-1].date()}")
+    print(f"  OOS ab          : {df_test.index[0].date()}")
+
+    # 4. Fibonacci-Range bestimmen (auf den letzten 200 Kerzen des Gesamtdatensatzes)
     fib_lookback = min(200, len(df))
     print(f"  Berechne Fibonacci Retracement ({fib_lookback} Kerzen)...")
     analysis = auto_fib_analysis(
@@ -147,16 +155,16 @@ def run_optimization(
     print(f"  Optimiere       : {n_trials} Trials | num_grids {NUM_GRIDS_MIN}-{NUM_GRIDS_MAX} | "
           f"leverage {LEVERAGE_MIN}-{LEVERAGE_MAX} | rebalance {FIB_MIN_REBALANCE_HOURS_MIN}-{FIB_MIN_REBALANCE_HOURS_MAX}h")
 
-    # 4. Optuna-Studie
-    def _run_sim(num_grids, leverage, min_rebalance_hours):
-        """Fuehrt dynamische Grid-Simulation durch und gibt (roi_pct, max_dd_pct, fills, pnl, epochs) zurueck."""
+    # 5. Simulation (laeuft wahlweise auf Train- oder Test-Daten)
+    def _run_sim(num_grids, leverage, min_rebalance_hours, data):
+        """Fuehrt dynamische Grid-Simulation durch."""
         try:
             epochs, pnl_df, fills_df = simulate_dynamic_grid(
-                df=df,
+                df=data,
                 num_grids=num_grids,
                 leverage=leverage,
                 capital=capital,
-                lookback_fib=fib_lookback,
+                lookback_fib=min(200, len(data)),
                 swing_window=FIB_SWING_WINDOW,
                 prefer_golden_zone=FIB_PREFER_GOLDEN_ZONE,
                 min_rebalance_hours=min_rebalance_hours,
@@ -191,6 +199,7 @@ def run_optimization(
             'fills_per_rebalance': fills_per_rebalance,
         }
 
+    # 6. Optuna-Studie — optimiert auf Training-Daten (70%)
     def objective(trial):
         num_grids = trial.suggest_int('num_grids', NUM_GRIDS_MIN, NUM_GRIDS_MAX)
         leverage = trial.suggest_int('leverage', LEVERAGE_MIN, LEVERAGE_MAX)
@@ -198,21 +207,21 @@ def run_optimization(
             'min_rebalance_hours', FIB_MIN_REBALANCE_HOURS_MIN, FIB_MIN_REBALANCE_HOURS_MAX
         )
 
-        # Bitget min notional: 5 USDT pro Grid-Order (Hebel kürzt sich raus)
+        # Bitget min notional: 5 USDT pro Grid-Order (Hebel kuerzt sich raus)
         if capital / num_grids < 5.0:
             return -9999.0
 
-        r = _run_sim(num_grids, leverage, min_rebalance_hours)
+        r = _run_sim(num_grids, leverage, min_rebalance_hours, df_train)
         if r is None:
             return -9999.0
         if r['max_drawdown_pct'] >= 100.0:
             return -9999.0
         if r['max_drawdown_pct'] > max_drawdown:
             return -9999.0
-        # Mindestens 30 Fills — weniger ist statistisch bedeutungslos
-        if r['total_fills'] < 30:
+        # Mindestens 20 Fills im Training
+        if r['total_fills'] < 20:
             return -9999.0
-        # Mindestens 3 Fills pro Rebalancing — Grid das staendig rebuildet wird verdient nichts
+        # Mindestens 3 Fills pro Rebalancing
         if r['fills_per_rebalance'] < 3.0:
             return -9999.0
 
@@ -227,13 +236,27 @@ def run_optimization(
             f"oder Kapital zu gering. DD-Limit erhoehen oder mehr Trials versuchen."
         )
 
-    # 5. Bestes Ergebnis (nochmal berechnen fuer vollstaendige Metriken)
+    # 7. Beste Parameter auf Train UND OOS auswerten
     best_params = study.best_params
-    best_result = _run_sim(
+    train_result = _run_sim(
         best_params['num_grids'],
         best_params['leverage'],
         best_params['min_rebalance_hours'],
+        df_train,
     ) or {}
+    oos_result = _run_sim(
+        best_params['num_grids'],
+        best_params['leverage'],
+        best_params['min_rebalance_hours'],
+        df_test,
+    ) or {}
+
+    # OOS muss positiv sein — sonst verwerfen
+    if oos_result.get('roi_pct', -1) <= 0:
+        raise ValueError(
+            f"OOS-Validierung negativ ({oos_result.get('roi_pct', 0):.2f}%). "
+            f"Parameter passen nicht auf die letzten 30% der Daten. Mehr Trials oder anderen Zeitraum versuchen."
+        )
 
     return {
         'symbol': symbol,
@@ -244,16 +267,26 @@ def run_optimization(
         'start_date': start_date,
         'end_date': end_date,
         'mode': mode,
+        'train_end_date': str(df_train.index[-1].date()),
+        'oos_start_date': str(df_test.index[0].date()),
         'num_grids': best_params['num_grids'],
         'leverage': best_params['leverage'],
         'min_rebalance_hours': best_params['min_rebalance_hours'],
-        'roi_pct': best_result.get('roi_pct', 0),
-        'max_drawdown_pct': best_result.get('max_drawdown_pct', 0),
-        'total_fills': best_result.get('total_fills', 0),
-        'total_pnl_usdt': best_result.get('total_pnl_usdt', 0),
-        'spacing': best_result.get('spacing', 0),
-        'rebalances': best_result.get('rebalances', 0),
-        'fills_per_rebalance': best_result.get('fills_per_rebalance', 0),
+        # Training-Metriken (70%)
+        'roi_pct': train_result.get('roi_pct', 0),
+        'max_drawdown_pct': train_result.get('max_drawdown_pct', 0),
+        'total_fills': train_result.get('total_fills', 0),
+        'total_pnl_usdt': train_result.get('total_pnl_usdt', 0),
+        'spacing': train_result.get('spacing', 0),
+        'rebalances': train_result.get('rebalances', 0),
+        'fills_per_rebalance': train_result.get('fills_per_rebalance', 0),
+        # OOS-Metriken (30%) — entscheidend fuer Live-Tauglichkeit
+        'oos_roi_pct': oos_result.get('roi_pct', 0),
+        'oos_max_drawdown_pct': oos_result.get('max_drawdown_pct', 0),
+        'oos_total_fills': oos_result.get('total_fills', 0),
+        'oos_total_pnl_usdt': oos_result.get('total_pnl_usdt', 0),
+        'oos_rebalances': oos_result.get('rebalances', 0),
+        'oos_fills_per_rebalance': oos_result.get('fills_per_rebalance', 0),
         'lower_price': lower,
         'upper_price': upper,
         'lower_label': lower_label,
@@ -353,29 +386,21 @@ def print_result(result: dict):
     print(f"    Oben   ({result['upper_label']}): {result['upper_price']:,.4f}")
     print(f"    Abstand: {result['spacing']:.4f} pro Stufe")
     print('-' * w)
-    print(f"  Backtest ({start} bis {end}):")
+    train_end = result.get('train_end_date', end)
+    oos_start = result.get('oos_start_date', '?')
+    print(f"  Training (70%) — bis {train_end}:")
     print(f"    ROI             : {result['roi_pct']:+.2f}%")
     print(f"    Max Drawdown    : {result['max_drawdown_pct']:.2f}%")
-    print(f"    Gesamt-Fills    : {result['total_fills']}")
-    print(f"    Rebalancings    : {result.get('rebalances', '?')}")
-    print(f"    Fills/Rebalance : {result.get('fills_per_rebalance', 0):.1f}")
-    print(f"    Gesamt-PnL      : {result['total_pnl_usdt']:+.4f} USDT")
-    if result['total_fills'] > 0:
-        avg = result['total_pnl_usdt'] / result['total_fills']
-        print(f"    Ø PnL / Fill   : {avg:+.4f} USDT")
+    print(f"    Fills           : {result['total_fills']}  |  Reb.: {result.get('rebalances', '?')}  |  F/R: {result.get('fills_per_rebalance', 0):.1f}")
+    print(f"    PnL             : {result['total_pnl_usdt']:+.4f} USDT")
+    print('-' * w)
+    print(f"  Out-of-Sample (30%) — ab {oos_start}:")
+    print(f"    ROI             : {result.get('oos_roi_pct', 0):+.2f}%")
+    print(f"    Max Drawdown    : {result.get('oos_max_drawdown_pct', 0):.2f}%")
+    print(f"    Fills           : {result.get('oos_total_fills', 0)}  |  Reb.: {result.get('oos_rebalances', '?')}  |  F/R: {result.get('oos_fills_per_rebalance', 0):.1f}")
+    print(f"    PnL             : {result.get('oos_total_pnl_usdt', 0):+.4f} USDT")
     print(f"    Kapital         : {result['capital']} USDT")
     print('=' * w)
-
-    if result['total_fills'] == 0:
-        print()
-        print("  !! WARNUNG: Backtest zeigt 0 Fills !!")
-        print("     Moegliche Ursachen:")
-        print("     - Preis war im Backtest-Zeitraum ausserhalb der Grid-Range")
-        print("     - Starker Trend (kein Seitwärtsmarkt) → Grid ungeeignet")
-        print("     - Zu wenige Kerzen fuer aussagekraeftigen Test")
-        print("     Empfehlung: kleineres Timeframe (z.B. 4h) oder")
-        print("     anderen Backtest-Zeitraum versuchen.")
-        print('=' * w)
 
 
 # ---------------------------------------------------------------------------
