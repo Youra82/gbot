@@ -251,11 +251,18 @@ def run_optimization(
         df_test,
     ) or {}
 
-    # OOS muss positiv sein — sonst verwerfen
-    if oos_result.get('roi_pct', -1) <= 0:
+    # OOS muss positiv und DD unter Limit sein — sonst verwerfen
+    oos_roi = oos_result.get('roi_pct', -1)
+    oos_dd  = oos_result.get('max_drawdown_pct', 999)
+    if oos_roi <= 0:
         raise ValueError(
-            f"OOS-Validierung negativ ({oos_result.get('roi_pct', 0):.2f}%). "
+            f"OOS-Validierung negativ ({oos_roi:.2f}%). "
             f"Parameter passen nicht auf die letzten 30% der Daten. Mehr Trials oder anderen Zeitraum versuchen."
+        )
+    if oos_dd > max_drawdown:
+        raise ValueError(
+            f"OOS-Drawdown zu hoch ({oos_dd:.2f}% > Limit {max_drawdown}%). "
+            f"Config wuerde im OOS-Zeitraum zu stark verlieren. Mehr Trials oder DD-Limit erhoehen."
         )
 
     return {
