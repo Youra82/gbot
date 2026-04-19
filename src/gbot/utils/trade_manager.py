@@ -491,6 +491,7 @@ def run_grid_cycle(
 
     # Fills erkennen: im Tracker vorhandene Orders die nicht mehr offen sind
     filled_entries = []
+    repaired_orders = []
     for price_key, order_info in list(active_orders.items()):
         order_id = order_info.get('order_id')
         if order_id not in open_order_ids:
@@ -507,6 +508,7 @@ def run_grid_cycle(
                             symbol, order_info['side'], order_info['amount'], order_info['price']
                         )
                         active_orders[price_key] = {**order_info, 'order_id': new_order['id']}
+                        repaired_orders.append(f"{order_info['side'].upper()} @ {order_info['price']}")
                         log.info(f"  Order neu platziert: {order_info['side'].upper()} @ {order_info['price']}")
                     except Exception as re:
                         log.error(f"  Neu-Platzierung fehlgeschlagen @ {price_key}: {re}")
@@ -600,6 +602,18 @@ def run_grid_cycle(
                 log.error(f"Grid-Level {level_r} konnte nicht wiederhergestellt werden: {e}")
 
     tracker['active_orders'] = active_orders
+
+    if repaired_orders:
+        try:
+            send_message(
+                telegram_config.get('bot_token'),
+                telegram_config.get('chat_id'),
+                f"\U0001f527 gbot: {len(repaired_orders)} Order(s) repariert fuer {symbol}\n"
+                + "\n".join(f"\u2022 {o}" for o in repaired_orders),
+            )
+        except Exception:
+            pass
+
     log.info(
         f"Zyklus | Orders: {len(active_orders)} | "
         f"Fills: {perf['total_fills']} | PnL: {perf['realized_pnl_usdt']:+.4f} USDT"
