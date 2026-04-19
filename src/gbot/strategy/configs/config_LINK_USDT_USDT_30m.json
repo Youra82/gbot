@@ -1,0 +1,23 @@
+{
+    "market": {
+        "symbol": "LINK/USDT:USDT"
+    },
+    "grid": {
+        "num_grids": 2,
+        "grid_mode": "neutral",
+        "fibonacci": {
+            "enabled": true,
+            "timeframe": "30m",
+            "lookback": 200,
+            "swing_window": 10,
+            "prefer_golden_zone": true,
+            "rebalance_on_break": true,
+            "min_rebalance_interval_hours": 4
+        }
+    },
+    "risk": {
+        "total_investment_usdt": 15.0,
+        "leverage": 3,
+        "margin_mode": "isolated"
+    }
+}
