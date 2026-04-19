@@ -1,6 +1,15 @@
 {
     "live_trading_settings": {
-        "active_strategies": []
+        "active_strategies": [
+            {
+                "symbol": "AAVE/USDT:USDT",
+                "active": true
+            },
+            {
+                "symbol": "SOL/USDT:USDT",
+                "active": true
+            }
+        ]
     },
     "optimization_settings": {
         "enabled": true,
