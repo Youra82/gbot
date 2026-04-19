@@ -120,6 +120,7 @@ def _fetch_and_backtest(cfg: dict, start_date: str, end_date: str, capital: floa
         'n_rebalancings': len(grid_epochs) - 1 if grid_epochs else 0,
         'fib_analysis': {},
         'cap_series': pnl_df['capital'] if not pnl_df.empty else pd.Series(dtype=float),
+        'fills_df': fills_df,
     }
 
 
@@ -146,6 +147,227 @@ def _combined_portfolio_dd(results: list, initial_capital: float) -> float:
     running_max = portfolio.cummax()
     dd = (running_max - portfolio) / running_max * 100
     return round(float(dd.max()), 2)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio-Export: HTML-Chart + Excel (Mode 2 & 3)
+# ---------------------------------------------------------------------------
+
+def _get_telegram_cfg() -> tuple:
+    try:
+        with open(os.path.join(PROJECT_ROOT, 'secret.json'), 'r') as f:
+            s = json.load(f)
+        tg = s.get('telegram', {})
+        return tg.get('bot_token', ''), tg.get('chat_id', '')
+    except Exception:
+        return '', ''
+
+
+def _generate_gbot_chart(results: list, total_capital: float,
+                          start_date: str, end_date: str, combined_dd: float):
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        print("  plotly nicht installiert — Chart uebersprungen. (pip install plotly)")
+        return
+
+    n = len(results)
+    COLORS = ['#f59e0b', '#10b981', '#8b5cf6', '#f97316', '#ec4899',
+              '#14b8a6', '#a3e635', '#fb923c', '#e879f9', '#38bdf8']
+
+    # Kombinierte Portfolio-Equity-Kurve
+    series_list = [r['cap_series'] for r in results if r.get('cap_series') is not None and len(r.get('cap_series', [])) > 0]
+    if not series_list:
+        print("  Keine Equity-Daten — Chart uebersprungen.")
+        return
+
+    combined_df = pd.concat(series_list, axis=1).sort_index().ffill().bfill()
+    portfolio = combined_df.sum(axis=1)
+
+    total_pnl_pct = (portfolio.iloc[-1] - total_capital) / total_capital * 100
+    sign = '+' if total_pnl_pct >= 0 else ''
+    pairs = [f"{r['symbol'].split('/')[0]}/{r['timeframe']}" for r in results]
+    title = (
+        f"gbot Portfolio — {n} Strategie(n) ({', '.join(pairs)}) | "
+        f"Zeitraum: {start_date} → {end_date} | "
+        f"PnL: {sign}{total_pnl_pct:.1f}% | "
+        f"Endkapital: {portfolio.iloc[-1]:.2f} USDT | "
+        f"MaxDD: {combined_dd:.1f}%"
+    )
+
+    fig = go.Figure()
+    fig.add_hline(y=total_capital,
+                  line=dict(color='rgba(100,100,100,0.35)', width=1, dash='dash'),
+                  annotation_text=f'Start {total_capital:.0f} USDT',
+                  annotation_position='top left')
+
+    for idx, r in enumerate(results):
+        cs = r.get('cap_series')
+        if cs is None or len(cs) == 0:
+            continue
+        label = f"{r['symbol'].split('/')[0]}/{r['timeframe']}"
+        fig.add_trace(go.Scatter(
+            x=cs.index, y=cs.values,
+            mode='lines', name=label,
+            line=dict(color=COLORS[idx % len(COLORS)], width=1.2, dash='dot'),
+            opacity=0.6,
+            hovertemplate=f"{label}: %{{y:.2f}} USDT<extra></extra>",
+        ))
+
+    fig.add_trace(go.Scatter(
+        x=portfolio.index, y=portfolio.values,
+        mode='lines', name='Portfolio Equity',
+        line=dict(color='#2563eb', width=2.5),
+        hovertemplate='Portfolio: %{y:.2f} USDT<extra></extra>',
+    ))
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=11), x=0.5, xanchor='center'),
+        height=600, hovermode='x unified', template='plotly_dark',
+        xaxis=dict(rangeslider=dict(visible=True), fixedrange=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        margin=dict(l=60, r=60, t=80, b=40),
+        yaxis=dict(title='Equity (USDT)', fixedrange=False),
+    )
+
+    out_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'charts')
+    os.makedirs(out_dir, exist_ok=True)
+    out_file = os.path.join(out_dir, 'gbot_portfolio_equity.html')
+    fig.write_html(out_file)
+    print(f"  Chart gespeichert: gbot_portfolio_equity.html")
+
+    bot_token, chat_id = _get_telegram_cfg()
+    if bot_token and chat_id:
+        try:
+            from gbot.utils.telegram import send_document
+            caption = (
+                f"gbot Portfolio-Equity\n"
+                f"{start_date} → {end_date} | {n} Strategie(n) | "
+                f"PnL: {sign}{total_pnl_pct:.1f}% | "
+                f"Equity: {portfolio.iloc[-1]:.2f} USDT | "
+                f"MaxDD: {combined_dd:.1f}%"
+            )
+            send_document(bot_token, chat_id, out_file, caption=caption)
+            print(f"  Chart via Telegram gesendet.")
+        except Exception as e:
+            print(f"  Telegram-Versand fehlgeschlagen: {e}")
+
+
+def _generate_gbot_excel(results: list, total_capital: float,
+                          start_date: str, end_date: str):
+    try:
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        print("  openpyxl nicht installiert — Excel uebersprungen. (pip install openpyxl)")
+        return
+
+    # Alle Fills aus allen Strategien sammeln
+    all_fills = []
+    for r in results:
+        fdf = r.get('fills_df')
+        cs = r.get('cap_series')
+        if fdf is None or fdf.empty:
+            continue
+        sym_short = r['symbol'].split('/')[0]
+        tf = r['timeframe']
+        # Kapital zum Fill-Zeitpunkt aus cap_series interpolieren
+        for ts, row in fdf.iterrows():
+            if cs is not None and not cs.empty:
+                idx_pos = cs.index.searchsorted(ts, side='right') - 1
+                cap_at = float(cs.iloc[max(0, idx_pos)]) if idx_pos >= 0 else total_capital
+            else:
+                cap_at = None
+            all_fills.append({
+                'Datum':    str(ts)[:16].replace('T', ' '),
+                'Symbol':   sym_short,
+                'TF':       tf,
+                'Seite':    'KAUF' if row['side'] == 'buy' else 'VERKAUF',
+                'Preis':    round(float(row['price']), 6),
+                'Kapital':  round(cap_at, 4) if cap_at is not None else '',
+            })
+
+    if not all_fills:
+        print("  Keine Fill-Daten — Excel uebersprungen.")
+        return
+
+    all_fills.sort(key=lambda x: x['Datum'])
+    for i, f in enumerate(all_fills, 1):
+        f['Nr'] = i
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = 'Grid Fills'
+
+    header_fill  = PatternFill('solid', fgColor='1E3A5F')
+    buy_fill     = PatternFill('solid', fgColor='D6F4DC')
+    sell_fill    = PatternFill('solid', fgColor='FAD7D7')
+    alt_fill     = PatternFill('solid', fgColor='F2F2F2')
+    thin_border  = Border(
+        left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
+        top=Side(style='thin', color='CCCCCC'),  bottom=Side(style='thin', color='CCCCCC'),
+    )
+    headers = ['Nr', 'Datum', 'Symbol', 'TF', 'Seite', 'Preis', 'Kapital']
+    col_widths = {'Nr': 5, 'Datum': 18, 'Symbol': 10, 'TF': 6,
+                  'Seite': 10, 'Preis': 14, 'Kapital': 14}
+
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = Font(bold=True, color='FFFFFF', size=11)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = thin_border
+        ws.column_dimensions[get_column_letter(col)].width = col_widths.get(h, 12)
+    ws.row_dimensions[1].height = 22
+
+    for r_idx, row in enumerate(all_fills, 2):
+        fill = buy_fill if row['Seite'] == 'KAUF' else (sell_fill if r_idx % 2 == 0 else alt_fill)
+        for col, key in enumerate(headers, 1):
+            cell = ws.cell(row=r_idx, column=col, value=row[key])
+            cell.fill = fill
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            if key in ('Preis', 'Kapital'):
+                cell.number_format = '#,##0.0000'
+        ws.row_dimensions[r_idx].height = 18
+
+    # Zusammenfassung
+    sr = len(all_fills) + 3
+    total_fills = len(all_fills)
+    buys  = sum(1 for f in all_fills if f['Seite'] == 'KAUF')
+    sells = sum(1 for f in all_fills if f['Seite'] == 'VERKAUF')
+    end_cap = results[0]['cap_series'].iloc[-1] if results and results[0].get('cap_series') is not None and len(results[0].get('cap_series', [])) > 0 else 0
+    pnl_pct = (sum(r.get('total_pnl_usdt', 0) for r in results) / total_capital * 100) if total_capital else 0
+
+    for label, value in [
+        ('Grid Fills gesamt', total_fills),
+        ('Kaeufe', buys), ('Verkaeufe', sells),
+        ('PnL', f"{pnl_pct:+.1f}%"),
+        ('Startkapital', f"{total_capital:.2f} USDT"),
+    ]:
+        ws.cell(row=sr, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=sr, column=2, value=value)
+        sr += 1
+
+    out_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'charts')
+    os.makedirs(out_dir, exist_ok=True)
+    out_file = os.path.join(out_dir, 'gbot_portfolio_fills.xlsx')
+    wb.save(out_file)
+    print(f"  Excel gespeichert: gbot_portfolio_fills.xlsx  ({total_fills} Fills)")
+
+    bot_token, chat_id = _get_telegram_cfg()
+    if bot_token and chat_id:
+        try:
+            from gbot.utils.telegram import send_document
+            caption = (
+                f"gbot Grid Fills — {total_fills} Fills | "
+                f"PnL: {pnl_pct:+.1f}%"
+            )
+            send_document(bot_token, chat_id, out_file, caption=caption)
+            print(f"  Excel via Telegram gesendet.")
+        except Exception as e:
+            print(f"  Telegram-Versand fehlgeschlagen: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +494,12 @@ def run_manual_portfolio(start_date: str, end_date: str, capital: float):
     print(f"  Gesamt-Fills     : {total_fills}")
     sep()
 
+    print()
+    ans = input("  Chart & Excel erstellen und via Telegram senden? (j/n) [Standard: n]: ").strip().lower()
+    if ans in ('j', 'y', 'ja'):
+        _generate_gbot_chart(results, total_capital, start_date, end_date, combined_dd)
+        _generate_gbot_excel(results, total_capital, start_date, end_date)
+
 
 # ---------------------------------------------------------------------------
 # Modus 3: Automatische Portfolio-Optimierung
@@ -389,6 +617,12 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
     with open(out_path, 'w') as f:
         json.dump(opt_result, f, indent=2)
     print(f"  Ergebnis gespeichert: {out_path}")
+
+    best_results = [r for _, _, r in best_team]
+    _generate_gbot_chart(best_results, best_stats['total_capital'],
+                          start_date, end_date, best_stats['combined_dd'])
+    _generate_gbot_excel(best_results, best_stats['total_capital'],
+                          start_date, end_date)
 
 
 # ---------------------------------------------------------------------------
