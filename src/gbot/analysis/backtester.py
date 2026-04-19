@@ -144,8 +144,8 @@ def run_grid_backtest(
         sell_orders.update(new_sell_orders - sell_orders)
         buy_orders.update(new_buy_orders - buy_orders)
 
-        # Grid-SL: Preis unter lower_price → Positionen schliessen, Grid neu starten
-        if candle_low < lower and open_positions:
+        # Grid-SL: Cron prueft close_price (nicht candle_low) — simuliert 15min-Cron
+        if close_price < lower:
             for bp in open_positions.values():
                 total_pnl += (close_price - bp) * amount - close_price * amount * fee_rate
             open_positions.clear()
