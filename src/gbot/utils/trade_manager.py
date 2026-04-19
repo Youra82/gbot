@@ -656,6 +656,12 @@ def full_grid_cycle(exchange: Exchange, params: dict, telegram_config: dict, log
     # Cache-Cleanup (loescht nur wenn Dateien aelter als auto_clear_cache_days)
     auto_clear_cache(log)
 
+    # Grid-Reset wenn initialisiert aber keine aktiven Orders mehr vorhanden
+    if tracker.get('initialized') and not tracker.get('active_orders'):
+        log.warning("Grid initialisiert aber keine aktiven Orders — setze zurueck fuer Neuinitialisierung.")
+        tracker['initialized'] = False
+        write_tracker(tracker_path, tracker)
+
     if not tracker.get('initialized'):
         # Verwaiste Positionen schliessen bevor Grid initialisiert wird
         check_orphan_positions(exchange, symbol, tracker, telegram_config, log)
