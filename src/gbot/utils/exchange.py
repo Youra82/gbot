@@ -75,6 +75,8 @@ class Exchange:
         except ccxt.ExchangeError as e:
             if 'Margin mode is the same' in str(e) or 'margin mode is not changed' in str(e).lower() or '40051' in str(e):
                 logger.info(f"Margin-Modus fuer {symbol} bereits '{margin_mode_lower}' (unveraendert).")
+            elif '40014' in str(e):
+                logger.warning(f"Margin-Modus konnte nicht gesetzt werden (API-Key Permission fehlt) — wird uebersprungen.")
             else:
                 logger.error(f"Fehler beim Setzen des Margin-Modus fuer {symbol}: {e}")
         except Exception as e:
@@ -94,6 +96,8 @@ class Exchange:
         except ccxt.ExchangeError as e:
             if 'Leverage not changed' in str(e) or 'leverage is not modified' in str(e).lower() or '40052' in str(e):
                 logger.info(f"Hebel fuer {symbol} bereits {leverage}x (unveraendert).")
+            elif '40014' in str(e):
+                logger.warning(f"Hebel konnte nicht gesetzt werden (API-Key Permission fehlt) — wird uebersprungen.")
             else:
                 logger.error(f"Fehler beim Setzen des Hebels fuer {symbol}: {e}")
         except Exception as e:
@@ -109,12 +113,6 @@ class Exchange:
         """
         if params is None:
             params = {}
-        params = {
-            'marginMode': margin_mode,
-            'productType': 'USDT-FUTURES',
-            'marginCoin': 'USDT',
-            **params,
-        }
         try:
             order = self.exchange.create_order(symbol, 'limit', side, amount, price, params)
             logger.info(f"Limit-Order platziert: {side.upper()} {amount} {symbol} @ {price} | ID: {order.get('id')}")
