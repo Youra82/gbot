@@ -93,6 +93,16 @@ def main():
             except Exception as e:
                 logging.error(f"Fehler beim Starten des Prozesses fuer {symbol}: {e}")
 
+        # --- Auto-Optimizer im Hintergrund pruefen ---
+        auto_opt_script = os.path.join(SCRIPT_DIR, 'auto_optimizer_scheduler.py')
+        if os.path.exists(auto_opt_script):
+            logging.info("[Auto-Optimizer] Pruefe ob Optimierung faellig...")
+            subprocess.Popen(
+                [python, auto_opt_script],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
     except FileNotFoundError as e:
         logging.critical(f"Datei nicht gefunden: {e}")
     except json.JSONDecodeError as e:
