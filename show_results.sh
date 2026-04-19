@@ -88,11 +88,16 @@ if not portfolio:
 else:
     strategies = []
     for filename in portfolio:
-        # config_BTC_USDT_USDT.json -> BTC/USDT:USDT
-        m = re.match(r'config_([A-Z0-9]+)_USDT_USDT\.json', filename)
+        # config_DOGE_USDT_USDT_1d.json -> DOGE/USDT:USDT timeframe=1d
+        # config_BTC_USDT_USDT.json    -> BTC/USDT:USDT  (kein TF, Fallback)
+        m = re.match(r'config_([A-Z0-9]+)_USDT_USDT(?:_([a-z0-9]+))?\.json', filename)
         if m:
             coin = m.group(1)
-            strategies.append({'symbol': f"{coin}/USDT:USDT", 'active': True})
+            tf = m.group(2)
+            entry = {'symbol': f"{coin}/USDT:USDT", 'active': True}
+            if tf:
+                entry['timeframe'] = tf
+            strategies.append(entry)
 
     with open('settings.json', 'r') as f:
         settings = json.load(f)
