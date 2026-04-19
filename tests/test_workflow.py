@@ -100,7 +100,7 @@ def test_gbot_grid_workflow_on_bitget(test_setup):
     upper = round(price * 1.02, 8)
     levels = calculate_grid_levels(lower, upper, NUM_GRIDS)
     buy_levels, sell_levels = split_levels_by_price(levels, price, mode='neutral')
-    amount = calculate_amount_per_grid(CAPITAL, LEVERAGE, NUM_GRIDS, price)
+    amount = calculate_amount_per_grid(CAPITAL, NUM_GRIDS, price, LEVERAGE)
 
     print(f"[3/5] Grid: lower={lower:.8f}  upper={upper:.8f}  Levels={[f'{l:.8f}' for l in levels]}")
     print(f"      Buy-Levels: {[f'{l:.8f}' for l in buy_levels]}")
@@ -120,7 +120,7 @@ def test_gbot_grid_workflow_on_bitget(test_setup):
     placed_ids = []
     for bp in buy_levels:
         bp_rounded = exchange.round_price(SYMBOL, bp)
-        notional = bp_rounded * order_amount / LEVERAGE
+        notional = bp_rounded * order_amount
         if notional < 5.0:
             print(f"  Ueberspringe Level {bp_rounded:.8f} — Notional {notional:.4f} USDT < 5 USDT")
             continue
