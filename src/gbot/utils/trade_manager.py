@@ -330,10 +330,7 @@ def maybe_rebalance(
       4. Telegram-Benachrichtigung
     """
     fib_cfg = params['grid'].get('fibonacci', {})
-
-    # Nur aktiv wenn fibonacci.enabled = true und rebalance_on_break = true
-    if not fib_cfg.get('enabled', False) or not fib_cfg.get('rebalance_on_break', True):
-        return tracker
+    fib_enabled = fib_cfg.get('enabled', False) and fib_cfg.get('rebalance_on_break', True)
 
     symbol = tracker.get('symbol', params['market']['symbol'])
     gc = tracker.get('grid_config', {})
@@ -357,40 +354,31 @@ def maybe_rebalance(
         f"(Bereich: {lower:.4f}-{upper:.4f}, Abstand: {distance_pct:.2f}%)"
     )
 
-    # Cooldown pruefen
-    min_hours = fib_cfg.get('min_rebalance_interval_hours', 4)
-    last_str = tracker.get('last_rebalance_at')
-    if last_str:
-        try:
-            last_dt = datetime.fromisoformat(last_str)
-            elapsed = datetime.now(timezone.utc) - last_dt
-            if elapsed < timedelta(hours=min_hours):
-                remaining_min = int((timedelta(hours=min_hours) - elapsed).total_seconds() / 60)
-                log.info(
-                    f"Rebalancing-Cooldown: naechstes Rebalancing in {remaining_min} Minuten. "
-                    f"Zyklus laeuft mit altem Grid weiter."
-                )
-                return tracker
-        except Exception:
-            pass
+    # Grid-SL: immer sofort ausfuehren (kein Cooldown), unabhaengig von Fibonacci
+    log.info(f"Grid-SL: Orders stornieren und Positionen schliessen ({direction})...")
+    try:
+        exchange.cancel_all_orders(symbol)
+        time.sleep(1)
+        exchange.close_all_positions(symbol)
+        time.sleep(1)
+    except Exception as e:
+        log.error(f"Grid-SL Positions-Closing fehlgeschlagen: {e}")
 
-    # --- Rebalancing starten ---
-    grid_sl_triggered = direction == 'UNTEN'
-    log.info(f"Starte {'Grid-SL + ' if grid_sl_triggered else ''}Fibonacci-Rebalancing...")
+    # Ohne Fibonacci: Grid bleibt gestoppt (kein Neuaufbau), Tracker zuruecksetzen
+    if not fib_enabled:
+        tracker['initialized'] = False
+        send_message(
+            telegram_config.get('bot_token'), telegram_config.get('chat_id'),
+            f"GRID-SL: {symbol}\nPreis hat Grid nach {direction} verlassen.\n"
+            f"Positionen geschlossen. Grid wird beim naechsten Lauf neu initialisiert."
+        )
+        return tracker
+
+    # --- Fibonacci-Rebalancing ---
+    log.info("Starte Fibonacci-Rebalancing...")
 
     try:
-        # 1. Alle offenen Orders stornieren
-        cancelled = exchange.cancel_all_orders(symbol)
-        log.info(f"  {cancelled} Orders storniert.")
-        time.sleep(1)
-
-        # 2. Bei Preis-Durchbruch (oben oder unten): alle offenen Positionen schliessen
-        if grid_sl_triggered or direction == 'OBEN':
-            log.warning(f"  Grid-SL: Schliesse offene Positionen fuer {symbol}...")
-            exchange.close_all_positions(symbol)
-            time.sleep(1)
-
-        # 3. Neue Fibonacci-Range berechnen
+        # Neue Fibonacci-Range berechnen
         new_lower, new_upper, fib_analysis = _get_fib_range(params)
         log.info(f"  Neuer Grid-Bereich: {new_lower:.4f} - {new_upper:.4f}")
 
@@ -441,11 +429,11 @@ def maybe_rebalance(
         try:
             swing = fib_analysis['swing_points']
             suggested = fib_analysis['suggested_range']
-            header = f"GRID-SL ausgeloest #{tracker['rebalance_count']}: {symbol}" if grid_sl_triggered else f"Grid Rebalancing #{tracker['rebalance_count']}: {symbol}"
+            header = f"Grid-SL + Rebalancing #{tracker['rebalance_count']}: {symbol}"
             msg = (
                 f"{header}\n\n"
                 f"Preis hat Grid nach {direction} verlassen.\n"
-                f"{'Positionen geschlossen. Neustart:' if grid_sl_triggered else 'Neuer Fibonacci-Bereich:'}\n"
+                f"Positionen geschlossen. Neuer Fibonacci-Bereich:\n"
                 f"  Unten: {new_lower:.4f} ({suggested['lower_label']})\n"
                 f"  Oben : {new_upper:.4f} ({suggested['upper_label']})\n\n"
                 f"Swing High: {swing['swing_high']:.4f}\n"
