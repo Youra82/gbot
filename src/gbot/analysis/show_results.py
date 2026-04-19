@@ -119,7 +119,33 @@ def _fetch_and_backtest(cfg: dict, start_date: str, end_date: str, capital: floa
         'candles': len(df),
         'n_rebalancings': len(grid_epochs) - 1 if grid_epochs else 0,
         'fib_analysis': {},
+        'cap_series': pnl_df['capital'] if not pnl_df.empty else pd.Series(dtype=float),
     }
+
+
+# ---------------------------------------------------------------------------
+# Portfolio-Hilfsfunktion: kombinierte Equity-Kurve & DD
+# ---------------------------------------------------------------------------
+
+def _combined_portfolio_dd(results: list, initial_capital: float) -> float:
+    """
+    Kombiniert N unabhaengige Equity-Kurven (jede startet bei initial_capital) zu einer
+    Portfolio-Gesamtkurve (startet bei N * initial_capital) und berechnet den Max-DD
+    davon. Gibt den korrekten Diversifikations-Vorteil wieder — Strategien die phasenverschoben
+    sind, senken den Portfolio-DD unter das Maximum der Einzelwerte.
+    """
+    series_list = [r.get('cap_series') for r in results]
+    valid = [s for s in series_list if s is not None and len(s) > 0]
+    if not valid:
+        return max(r['max_drawdown_pct'] for r in results)
+
+    df = pd.concat(valid, axis=1).sort_index()
+    df = df.ffill().bfill()
+
+    portfolio = df.sum(axis=1)
+    running_max = portfolio.cummax()
+    dd = (running_max - portfolio) / running_max * 100
+    return round(float(dd.max()), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -226,22 +252,23 @@ def run_manual_portfolio(start_date: str, end_date: str, capital: float):
         return
 
     portfolio_roi = (total_pnl / total_capital * 100) if total_capital > 0 else 0
-    max_dd = max(r['max_drawdown_pct'] for r in results)
+    combined_dd = _combined_portfolio_dd(results, capital)
+    max_dd_individual = max(r['max_drawdown_pct'] for r in results)
 
     sep()
-    print("  Portfolio-Simulations-Ergebnis")
+    print("  Portfolio-Simulations-Ergebnis  (paralleler Live-Betrieb)")
     sep('-')
     for r in results:
         pnl_str = f"{r['total_pnl_usdt']:+.4f}"
         end_cap = r['end_capital_usdt']
-        print(f"  {r['symbol']:<22} ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  PnL: {pnl_str} USDT  Endkap: {end_cap:.2f} USDT  Fills: {r['total_fills']}")
+        print(f"  {r['symbol']:<22} ({r['timeframe']})  ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  PnL: {pnl_str} USDT  Endkap: {end_cap:.2f} USDT  Fills: {r['total_fills']}")
     sep('-')
     end_total = total_capital + total_pnl
-    print(f"  Startkapital     : {total_capital:.2f} USDT")
+    print(f"  Startkapital     : {total_capital:.2f} USDT  ({len(results)}x {capital:.2f} USDT parallel)")
     print(f"  Endkapital       : {end_total:.2f} USDT")
     print(f"  Gesamt-PnL       : {total_pnl:+.4f} USDT")
     print(f"  Portfolio ROI    : {portfolio_roi:+.2f}%")
-    print(f"  Hoechster Max DD : {max_dd:.2f}%")
+    print(f"  Portfolio Max DD : {combined_dd:.2f}%  (Einzel-Max: {max_dd_individual:.2f}%)")
     print(f"  Gesamt-Fills     : {total_fills}")
     sep()
 
@@ -289,14 +316,15 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
 
     for size in range(1, max_team_size + 1):
         for combo in combinations(individual, size):
-            valid = all(r['max_drawdown_pct'] <= target_max_dd for _, _, r in combo)
-            valid = valid and all(r['roi_pct'] > -9999 for _, _, r in combo)
-            if not valid:
+            results_combo = [r for _, _, r in combo]
+            if any(r['roi_pct'] <= -9999 for r in results_combo):
                 continue
-            total_pnl = sum(r['total_pnl_usdt'] for _, _, r in combo)
+            combined_dd = _combined_portfolio_dd(results_combo, capital)
+            if combined_dd > target_max_dd:
+                continue
+            total_pnl = sum(r['total_pnl_usdt'] for r in results_combo)
             total_cap = capital * size
             roi = total_pnl / total_cap * 100
-            max_dd = max(r['max_drawdown_pct'] for _, _, r in combo)
             if roi > best_roi:
                 best_roi = roi
                 best_team = combo
@@ -304,8 +332,9 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
                     'total_pnl': total_pnl,
                     'total_capital': total_cap,
                     'roi': roi,
-                    'max_dd': max_dd,
-                    'fills': sum(r['total_fills'] for _, _, r in combo),
+                    'combined_dd': combined_dd,
+                    'max_dd_individual': max(r['max_drawdown_pct'] for r in results_combo),
+                    'fills': sum(r['total_fills'] for r in results_combo),
                 }
 
     sep()
@@ -315,26 +344,28 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
         sep()
         return
 
-    print(f"  Optimales Team gefunden ({len(best_team)} Strategien):")
+    n_team = len(best_team)
+    print(f"  Optimales Team gefunden ({n_team} Strategie(n), {n_team}x {capital:.2f} USDT parallel):")
     sep('-')
     for filename, cfg, r in best_team:
         sym = r['symbol']
         end_cap = r['end_capital_usdt']
-        print(f"  {sym:<22}  ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  Endkap: {end_cap:.2f} USDT  Fills: {r['total_fills']}")
+        print(f"  {sym:<22} ({r['timeframe']})  ROI: {r['roi_pct']:>+7.2f}%  DD: {r['max_drawdown_pct']:>5.2f}%  Endkap: {end_cap:.2f} USDT  Fills: {r['total_fills']}")
     sep('-')
     end_total = best_stats['total_capital'] + best_stats['total_pnl']
-    print(f"  Startkapital     : {best_stats['total_capital']:.2f} USDT")
+    print(f"  Startkapital     : {best_stats['total_capital']:.2f} USDT  ({n_team}x {capital:.2f} USDT)")
     print(f"  Endkapital       : {end_total:.2f} USDT")
     print(f"  Gesamt-PnL       : {best_stats['total_pnl']:+.4f} USDT")
     print(f"  Portfolio ROI    : {best_stats['roi']:+.2f}%")
-    print(f"  Hoechster Max DD : {best_stats['max_dd']:.2f}%")
+    print(f"  Portfolio Max DD : {best_stats['combined_dd']:.2f}%  (Einzel-Max: {best_stats['max_dd_individual']:.2f}%)")
     print(f"  Gesamt-Fills     : {best_stats['fills']}")
     sep()
 
     # Ergebnis speichern fuer Shell-Nachbearbeitung
+    serializable_stats = {k: v for k, v in best_stats.items()}
     opt_result = {
         'optimal_portfolio': [filename for filename, _, _ in best_team],
-        'stats': best_stats,
+        'stats': serializable_stats,
         'generated_at': datetime.now(timezone.utc).isoformat(),
     }
     results_dir = os.path.join(PROJECT_ROOT, 'artifacts', 'results')
