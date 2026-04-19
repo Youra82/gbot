@@ -17,7 +17,10 @@
         "enabled": true,
         "_info": "symbols_to_optimize/timeframes_to_optimize: 'auto' liest active_strategies aus, oder explizite Liste wie ['BTC', 'ETH']",
         "symbols_to_optimize": "auto",
-        "timeframes_to_optimize": ["30m", "1h"],
+        "timeframes_to_optimize": [
+            "30m",
+            "1h"
+        ],
         "lookback_days": "auto",
         "start_capital": 15,
         "num_trials": 500,
