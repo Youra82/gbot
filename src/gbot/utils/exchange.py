@@ -137,7 +137,7 @@ class Exchange:
     def fetch_open_orders(self, symbol: str) -> List[dict]:
         """Alle offenen Orders fuer ein Symbol abrufen."""
         try:
-            orders = self.exchange.fetch_open_orders(symbol)
+            orders = self.exchange.fetch_open_orders(symbol, params={'productType': 'USDT-FUTURES'})
             return orders
         except Exception as e:
             logger.error(f"Fehler beim Abrufen offener Orders fuer {symbol}: {e}")
@@ -192,7 +192,8 @@ class Exchange:
     def fetch_open_positions(self, symbol: str) -> list:
         """Offene Positionen für ein Symbol abrufen."""
         try:
-            positions = self.exchange.fetch_positions([symbol])
+            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
+            positions = self.exchange.fetch_positions([symbol], params=params)
             return [p for p in positions if float(p.get('contracts', 0) or 0) != 0]
         except Exception as e:
             logger.error(f"Fehler beim Abrufen offener Positionen fuer {symbol}: {e}")
