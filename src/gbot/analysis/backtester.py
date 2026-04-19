@@ -100,9 +100,12 @@ def run_grid_backtest(
     sell_fills = 0
     peak_capital = capital
     max_drawdown_pct = 0.0
+    grid_restarts = 0
     # open_positions: sell_level -> buy_price
     # Trackt offene Long-Positionen fuer Mark-to-Market DD-Berechnung
     open_positions: dict = {}
+
+    half_range = (upper - lower) / 2.0
 
     # --- Kerzen durchlaufen ---
     for _, row in df.iterrows():
@@ -141,6 +144,21 @@ def run_grid_backtest(
         sell_orders.update(new_sell_orders - sell_orders)
         buy_orders.update(new_buy_orders - buy_orders)
 
+        # Grid-SL: Preis unter lower_price → Positionen schliessen, Grid neu starten
+        if candle_low < lower and open_positions:
+            for bp in open_positions.values():
+                total_pnl += (close_price - bp) * amount - close_price * amount * fee_rate
+            open_positions.clear()
+            buy_orders.clear()
+            sell_orders.clear()
+            grid_restarts += 1
+            lower = _r(close_price - half_range)
+            upper = _r(close_price + half_range)
+            spacing = (upper - lower) / num_grids
+            levels = [_r(lower + i * spacing) for i in range(num_grids + 1)]
+            buy_orders = {l for l in levels if l < close_price}
+            sell_orders = {l for l in levels if l > close_price}
+
         # Drawdown tracken inkl. unrealisierter Verluste offener Long-Positionen
         unrealized = sum((close_price - bp) * amount for bp in open_positions.values())
         current_capital = capital + total_pnl + unrealized
@@ -160,6 +178,7 @@ def run_grid_backtest(
         'total_fills': total_fills,
         'buy_fills': buy_fills,
         'sell_fills': sell_fills,
+        'grid_restarts': grid_restarts,
         'num_grids': num_grids,
         'leverage': leverage,
         'spacing': round(spacing, 8),

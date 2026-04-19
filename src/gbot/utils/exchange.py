@@ -170,6 +170,37 @@ class Exchange:
         except Exception:
             return round(amount, 6)
 
+    def fetch_open_positions(self, symbol: str) -> list:
+        """Offene Positionen für ein Symbol abrufen."""
+        try:
+            positions = self.exchange.fetch_positions([symbol])
+            return [p for p in positions if float(p.get('contracts', 0) or 0) != 0]
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen offener Positionen fuer {symbol}: {e}")
+            return []
+
+    def close_all_positions(self, symbol: str) -> bool:
+        """Schliesst alle offenen Positionen fuer ein Symbol mit Market-Order (reduceOnly)."""
+        positions = self.fetch_open_positions(symbol)
+        if not positions:
+            logger.info(f"Keine offenen Positionen fuer {symbol}.")
+            return True
+        success = True
+        for pos in positions:
+            contracts = float(pos.get('contracts', 0) or 0)
+            side = pos.get('side', '').lower()
+            if contracts == 0:
+                continue
+            close_side = 'sell' if side == 'long' else 'buy'
+            try:
+                self.exchange.create_order(symbol, 'market', close_side, contracts, None, {'reduceOnly': True})
+                logger.info(f"Position geschlossen: {close_side.upper()} {contracts} {symbol}")
+                time.sleep(0.5)
+            except Exception as e:
+                logger.error(f"Position schliessen fehlgeschlagen ({close_side} {contracts} {symbol}): {e}")
+                success = False
+        return success
+
     def get_min_order_amount(self, symbol: str) -> float:
         """Mindestbestellmenge abrufen."""
         if symbol not in self.markets:

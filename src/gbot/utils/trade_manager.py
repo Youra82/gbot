@@ -375,7 +375,8 @@ def maybe_rebalance(
             pass
 
     # --- Rebalancing starten ---
-    log.info("Starte automatisches Fibonacci-Rebalancing...")
+    grid_sl_triggered = direction == 'UNTEN'
+    log.info(f"Starte {'Grid-SL + ' if grid_sl_triggered else ''}Fibonacci-Rebalancing...")
 
     try:
         # 1. Alle offenen Orders stornieren
@@ -383,7 +384,13 @@ def maybe_rebalance(
         log.info(f"  {cancelled} Orders storniert.")
         time.sleep(1)
 
-        # 2. Neue Fibonacci-Range berechnen
+        # 2. Bei Abwaertsdurchbruch: offene Long-Positionen schliessen
+        if grid_sl_triggered:
+            log.warning(f"  Grid-SL: Schliesse offene Positionen fuer {symbol}...")
+            exchange.close_all_positions(symbol)
+            time.sleep(1)
+
+        # 3. Neue Fibonacci-Range berechnen
         new_lower, new_upper, fib_analysis = _get_fib_range(params)
         log.info(f"  Neuer Grid-Bereich: {new_lower:.4f} - {new_upper:.4f}")
 
@@ -434,10 +441,11 @@ def maybe_rebalance(
         try:
             swing = fib_analysis['swing_points']
             suggested = fib_analysis['suggested_range']
+            header = f"GRID-SL ausgeloest #{tracker['rebalance_count']}: {symbol}" if grid_sl_triggered else f"Grid Rebalancing #{tracker['rebalance_count']}: {symbol}"
             msg = (
-                f"Grid Rebalancing #{tracker['rebalance_count']}: {symbol}\n\n"
+                f"{header}\n\n"
                 f"Preis hat Grid nach {direction} verlassen.\n"
-                f"Neuer Fibonacci-Bereich:\n"
+                f"{'Positionen geschlossen. Neustart:' if grid_sl_triggered else 'Neuer Fibonacci-Bereich:'}\n"
                 f"  Unten: {new_lower:.4f} ({suggested['lower_label']})\n"
                 f"  Oben : {new_upper:.4f} ({suggested['upper_label']})\n\n"
                 f"Swing High: {swing['swing_high']:.4f}\n"
