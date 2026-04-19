@@ -573,6 +573,32 @@ def run_grid_cycle(
 
         _send_fill_notification(telegram_config, symbol, side, fill_price, fill_amount, pnl, perf)
 
+    # Grid-Level-Abgleich: fehlende Orders neu platzieren
+    current_price = None
+    tracked_prices = {float(k) for k in active_orders}
+    for level in levels:
+        level_r = exchange.round_price(symbol, level)
+        if level_r not in tracked_prices:
+            if current_price is None:
+                try:
+                    current_price = exchange.get_current_price(symbol)
+                except Exception:
+                    break
+            side = 'buy' if level_r < current_price else 'sell'
+            try:
+                new_order = exchange.place_limit_order(symbol, side, amount_per_grid, level_r)
+                active_orders[str(level_r)] = {
+                    'order_id': new_order['id'],
+                    'side': side,
+                    'price': level_r,
+                    'amount': amount_per_grid,
+                    'placed_at': datetime.now(timezone.utc).isoformat(),
+                }
+                log.info(f"Fehlendes Grid-Level wiederhergestellt: {side.upper()} @ {level_r}")
+                time.sleep(0.3)
+            except Exception as e:
+                log.error(f"Grid-Level {level_r} konnte nicht wiederhergestellt werden: {e}")
+
     tracker['active_orders'] = active_orders
     log.info(
         f"Zyklus | Orders: {len(active_orders)} | "
