@@ -227,6 +227,7 @@ def initialize_grid(exchange: Exchange, params: dict, log: logging.Logger) -> di
     log.info(f"Initialisiere Grid fuer {symbol} | Stufen: {num_grids} | Modus: {mode} | Hebel: {leverage}x")
 
     # 1. Hebel & Margin setzen
+    exchange.set_margin_mode(symbol, margin_mode)
     exchange.set_leverage(symbol, leverage, margin_mode)
     time.sleep(1)
 

@@ -66,28 +66,38 @@ class Exchange:
         return float(usdt)
 
     # --- Hebel & Margin ---
-    def set_leverage(self, symbol: str, leverage: int, margin_mode: str = 'isolated'):
-        """Hebel und Margin-Modus setzen."""
+    def set_margin_mode(self, symbol: str, margin_mode: str = 'isolated'):
+        margin_mode_lower = margin_mode.lower()
         try:
-            if margin_mode == 'isolated':
-                self.exchange.set_margin_mode('isolated', symbol)
+            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
+            self.exchange.set_margin_mode(margin_mode_lower, symbol, params=params)
+            logger.info(f"Margin-Modus fuer {symbol} auf '{margin_mode_lower}' gesetzt.")
+        except ccxt.ExchangeError as e:
+            if 'Margin mode is the same' in str(e) or 'margin mode is not changed' in str(e).lower() or '40051' in str(e):
+                logger.debug(f"Margin-Modus fuer {symbol} bereits '{margin_mode_lower}'.")
             else:
-                self.exchange.set_margin_mode('cross', symbol)
-            self.exchange.set_leverage(leverage, symbol)
-            logger.info(f"Hebel {leverage}x ({margin_mode}) fuer {symbol} gesetzt.")
-        except ccxt.MarginModeAlreadySet:
-            logger.debug(f"Margin-Modus fuer {symbol} bereits korrekt gesetzt.")
-            try:
-                self.exchange.set_leverage(leverage, symbol)
-            except Exception as e:
-                logger.warning(f"Hebel setzen fehlgeschlagen (evtl. bereits korrekt): {e}")
+                logger.error(f"Fehler beim Setzen des Margin-Modus fuer {symbol}: {e}")
         except Exception as e:
-            logger.debug(f"Margin-Modus setzen fehlgeschlagen (evtl. bereits korrekt): {e}")
-            try:
-                self.exchange.set_leverage(leverage, symbol)
-                logger.info(f"Hebel {leverage}x fuer {symbol} gesetzt (Margin-Modus unveraendert).")
-            except Exception as e2:
-                logger.warning(f"Hebel setzen fehlgeschlagen (evtl. bereits korrekt): {e2}")
+            logger.error(f"Unerwarteter Fehler beim Setzen des Margin-Modus fuer {symbol}: {e}")
+
+    def set_leverage(self, symbol: str, leverage: int, margin_mode: str = 'isolated'):
+        try:
+            leverage = int(leverage)
+            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
+            if margin_mode.lower() == 'isolated':
+                self.exchange.set_leverage(leverage, symbol, params={**params, 'holdSide': 'long'})
+                import time as _time; _time.sleep(0.2)
+                self.exchange.set_leverage(leverage, symbol, params={**params, 'holdSide': 'short'})
+            else:
+                self.exchange.set_leverage(leverage, symbol, params=params)
+            logger.info(f"Hebel {leverage}x ({margin_mode}) fuer {symbol} gesetzt.")
+        except ccxt.ExchangeError as e:
+            if 'Leverage not changed' in str(e) or 'leverage is not modified' in str(e).lower() or '40052' in str(e):
+                logger.debug(f"Hebel fuer {symbol} bereits {leverage}x.")
+            else:
+                logger.error(f"Fehler beim Setzen des Hebels fuer {symbol}: {e}")
+        except Exception as e:
+            logger.error(f"Unerwarteter Fehler beim Setzen des Hebels fuer {symbol}: {e}")
 
     # --- Auftraege ---
     def place_limit_order(self, symbol: str, side: str, amount: float, price: float, params: dict = None) -> dict:
