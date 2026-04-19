@@ -384,8 +384,8 @@ def maybe_rebalance(
         log.info(f"  {cancelled} Orders storniert.")
         time.sleep(1)
 
-        # 2. Bei Abwaertsdurchbruch: offene Long-Positionen schliessen
-        if grid_sl_triggered:
+        # 2. Bei Preis-Durchbruch (oben oder unten): alle offenen Positionen schliessen
+        if grid_sl_triggered or direction == 'OBEN':
             log.warning(f"  Grid-SL: Schliesse offene Positionen fuer {symbol}...")
             exchange.close_all_positions(symbol)
             time.sleep(1)

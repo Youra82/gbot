@@ -101,9 +101,10 @@ def run_grid_backtest(
     peak_capital = capital
     max_drawdown_pct = 0.0
     grid_restarts = 0
-    # open_positions: sell_level -> buy_price
-    # Trackt offene Long-Positionen fuer Mark-to-Market DD-Berechnung
+    # open_positions:  sell_level -> buy_price  (offene Longs)
+    # short_positions: sell_level -> sell_price  (offene Shorts)
     open_positions: dict = {}
+    short_positions: dict = {}
 
     half_range = (upper - lower) / 2.0
 
@@ -116,26 +117,40 @@ def run_grid_backtest(
         new_sell_orders: set[float] = set()
         new_buy_orders: set[float] = set()
 
-        # Buy-Fills: Preis fällt auf oder unter das Buy-Level
+        # Buy-Fills
         for bp in list(buy_orders):
             if candle_low <= bp:
-                total_pnl -= bp * amount * fee_rate
+                sp_key = _r(bp + spacing)
+                closed_short = short_positions.pop(sp_key, None)
+                if closed_short is not None:
+                    # Short schliessen: Gewinn = spacing * amount - Fee
+                    total_pnl += spacing * amount - bp * amount * fee_rate
+                else:
+                    # Long eroeffnen: nur Entry-Fee
+                    total_pnl -= bp * amount * fee_rate
+                    if sp_key <= _r(upper) + 1e-9:
+                        open_positions[sp_key] = bp
                 buy_orders.discard(bp)
                 buy_fills += 1
                 total_fills += 1
                 sp = _r(bp + spacing)
                 if sp <= _r(upper) + 1e-9:
                     new_sell_orders.add(sp)
-                    open_positions[sp] = bp  # offene Long-Position
 
-        # Sell-Fills: Preis steigt auf oder über das Sell-Level
+        # Sell-Fills
         for sp in list(sell_orders):
             if candle_high >= sp:
-                total_pnl += spacing * amount - sp * amount * fee_rate
+                closed_long = open_positions.pop(sp, None)
+                if closed_long is not None:
+                    # Long schliessen: Gewinn = spacing * amount - Fee
+                    total_pnl += spacing * amount - sp * amount * fee_rate
+                else:
+                    # Short eroeffnen: nur Entry-Fee
+                    total_pnl -= sp * amount * fee_rate
+                    short_positions[sp] = sp
                 sell_orders.discard(sp)
                 sell_fills += 1
                 total_fills += 1
-                open_positions.pop(sp, None)  # Position geschlossen
                 bp = _r(sp - spacing)
                 if bp >= _r(lower) - 1e-9:
                     new_buy_orders.add(bp)
@@ -144,23 +159,40 @@ def run_grid_backtest(
         sell_orders.update(new_sell_orders - sell_orders)
         buy_orders.update(new_buy_orders - buy_orders)
 
-        # Grid-SL: Cron prueft close_price (nicht candle_low) — simuliert 15min-Cron
-        if close_price < lower:
-            for bp in open_positions.values():
-                total_pnl += (close_price - bp) * amount - close_price * amount * fee_rate
+        # Grid-SL: Cron prueft close_price — simuliert 15min-Cron
+        def _restart_grid():
+            nonlocal lower, upper, spacing, levels
             open_positions.clear()
+            short_positions.clear()
             buy_orders.clear()
             sell_orders.clear()
-            grid_restarts += 1
             lower = _r(close_price - half_range)
             upper = _r(close_price + half_range)
             spacing = (upper - lower) / num_grids
             levels = [_r(lower + i * spacing) for i in range(num_grids + 1)]
-            buy_orders = {l for l in levels if l < close_price}
-            sell_orders = {l for l in levels if l > close_price}
+            buy_orders.update(l for l in levels if l < close_price)
+            sell_orders.update(l for l in levels if l > close_price)
 
-        # Drawdown tracken inkl. unrealisierter Verluste offener Long-Positionen
-        unrealized = sum((close_price - bp) * amount for bp in open_positions.values())
+        if close_price < lower:
+            for bp in open_positions.values():
+                total_pnl += (close_price - bp) * amount - close_price * amount * fee_rate
+            for sp in short_positions:
+                total_pnl += (sp - close_price) * amount - close_price * amount * fee_rate
+            grid_restarts += 1
+            _restart_grid()
+        elif close_price > upper:
+            for sp in short_positions:
+                total_pnl += (sp - close_price) * amount - close_price * amount * fee_rate
+            for bp in open_positions.values():
+                total_pnl += (close_price - bp) * amount - close_price * amount * fee_rate
+            grid_restarts += 1
+            _restart_grid()
+
+        # Drawdown: unrealisierte Verluste Longs + Shorts
+        unrealized = (
+            sum((close_price - bp) * amount for bp in open_positions.values()) +
+            sum((sp - close_price) * amount for sp in short_positions)
+        )
         current_capital = capital + total_pnl + unrealized
         if current_capital > peak_capital:
             peak_capital = current_capital
