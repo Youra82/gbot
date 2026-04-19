@@ -500,8 +500,16 @@ def run_grid_cycle(
                 if status == 'closed':
                     filled_entries.append((price_key, order_info, fetched))
                 else:
-                    log.warning(f"Order {order_id} @ {price_key}: Status '{status}' — aus Tracker entfernt.")
+                    log.warning(f"Order {order_id} @ {price_key}: Status '{status}' — wird neu platziert.")
                     del active_orders[price_key]
+                    try:
+                        new_order = exchange.place_limit_order(
+                            symbol, order_info['side'], order_info['amount'], order_info['price']
+                        )
+                        active_orders[price_key] = {**order_info, 'order_id': new_order['id']}
+                        log.info(f"  Order neu platziert: {order_info['side'].upper()} @ {order_info['price']}")
+                    except Exception as re:
+                        log.error(f"  Neu-Platzierung fehlgeschlagen @ {price_key}: {re}")
             except Exception as e:
                 log.error(f"Order {order_id} konnte nicht abgerufen werden — aus Tracker entfernt: {e}")
                 del active_orders[price_key]
