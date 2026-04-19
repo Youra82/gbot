@@ -74,7 +74,7 @@ class Exchange:
             logger.info(f"Margin-Modus fuer {symbol} auf '{margin_mode_lower}' gesetzt.")
         except ccxt.ExchangeError as e:
             if 'Margin mode is the same' in str(e) or 'margin mode is not changed' in str(e).lower() or '40051' in str(e):
-                logger.debug(f"Margin-Modus fuer {symbol} bereits '{margin_mode_lower}'.")
+                logger.info(f"Margin-Modus fuer {symbol} bereits '{margin_mode_lower}' (unveraendert).")
             else:
                 logger.error(f"Fehler beim Setzen des Margin-Modus fuer {symbol}: {e}")
         except Exception as e:
@@ -93,14 +93,14 @@ class Exchange:
             logger.info(f"Hebel {leverage}x ({margin_mode}) fuer {symbol} gesetzt.")
         except ccxt.ExchangeError as e:
             if 'Leverage not changed' in str(e) or 'leverage is not modified' in str(e).lower() or '40052' in str(e):
-                logger.debug(f"Hebel fuer {symbol} bereits {leverage}x.")
+                logger.info(f"Hebel fuer {symbol} bereits {leverage}x (unveraendert).")
             else:
                 logger.error(f"Fehler beim Setzen des Hebels fuer {symbol}: {e}")
         except Exception as e:
             logger.error(f"Unerwarteter Fehler beim Setzen des Hebels fuer {symbol}: {e}")
 
     # --- Auftraege ---
-    def place_limit_order(self, symbol: str, side: str, amount: float, price: float, params: dict = None) -> dict:
+    def place_limit_order(self, symbol: str, side: str, amount: float, price: float, params: dict = None, margin_mode: str = 'isolated') -> dict:
         """
         Limit-Order platzieren.
         side: 'buy' (Long eroeffnen) oder 'sell' (Long schliessen / Short eroeffnen)
@@ -109,6 +109,12 @@ class Exchange:
         """
         if params is None:
             params = {}
+        params = {
+            'marginMode': margin_mode,
+            'productType': 'USDT-FUTURES',
+            'marginCoin': 'USDT',
+            **params,
+        }
         try:
             order = self.exchange.create_order(symbol, 'limit', side, amount, price, params)
             logger.info(f"Limit-Order platziert: {side.upper()} {amount} {symbol} @ {price} | ID: {order.get('id')}")

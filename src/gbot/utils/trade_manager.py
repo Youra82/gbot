@@ -167,6 +167,7 @@ def _place_grid_orders(
     amount_per_grid: float,
     mode: str,
     log: logging.Logger,
+    margin_mode: str = 'isolated',
 ) -> dict:
     """
     Platziert alle initialen Grid-Orders (Buy und Sell).
@@ -187,7 +188,7 @@ def _place_grid_orders(
         for price in price_list:
             price_r = exchange.round_price(symbol, price)
             try:
-                order = exchange.place_limit_order(symbol, side, amount_per_grid, price_r)
+                order = exchange.place_limit_order(symbol, side, amount_per_grid, price_r, margin_mode=margin_mode)
                 active_orders[str(price_r)] = {
                     'order_id': order['id'],
                     'side': side,
@@ -261,7 +262,7 @@ def initialize_grid(exchange: Exchange, params: dict, log: logging.Logger) -> di
         )
 
     # 5. Orders platzieren
-    active_orders = _place_grid_orders(exchange, symbol, levels, current_price, amount_per_grid, mode, log)
+    active_orders = _place_grid_orders(exchange, symbol, levels, current_price, amount_per_grid, mode, log, margin_mode)
 
     # 6. Fib-Meta fuer Tracker speichern
     fib_meta = {}
@@ -474,6 +475,7 @@ def run_grid_cycle(
     spacing = gc['spacing']
     amount_per_grid = gc['amount_per_grid']
     mode = gc['mode']
+    margin_mode = gc.get('margin_mode', 'isolated')
 
     # Offene Orders von der Boerse holen
     try:
@@ -505,7 +507,8 @@ def run_grid_cycle(
                     del active_orders[price_key]
                     try:
                         new_order = exchange.place_limit_order(
-                            symbol, order_info['side'], order_info['amount'], order_info['price']
+                            symbol, order_info['side'], order_info['amount'], order_info['price'],
+                            margin_mode=margin_mode,
                         )
                         active_orders[price_key] = {**order_info, 'order_id': new_order['id']}
                         repaired_orders.append(f"{order_info['side'].upper()} @ {order_info['price']}")
@@ -555,7 +558,7 @@ def run_grid_cycle(
             key = str(price_r)
             if key not in active_orders:
                 try:
-                    new_order = exchange.place_limit_order(symbol, next_side, next_amount, price_r)
+                    new_order = exchange.place_limit_order(symbol, next_side, next_amount, price_r, margin_mode=margin_mode)
                     entry = {
                         'order_id': new_order['id'],
                         'side': next_side,
@@ -588,7 +591,7 @@ def run_grid_cycle(
                     break
             side = 'buy' if level_r < current_price else 'sell'
             try:
-                new_order = exchange.place_limit_order(symbol, side, amount_per_grid, level_r)
+                new_order = exchange.place_limit_order(symbol, side, amount_per_grid, level_r, margin_mode=margin_mode)
                 active_orders[str(level_r)] = {
                     'order_id': new_order['id'],
                     'side': side,
