@@ -13,6 +13,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, 'src'))
 
 from gbot.utils.exchange import Exchange
+from gbot.utils.telegram import send_message
 from gbot.strategy.grid_logic import (
     calculate_grid_levels,
     split_levels_by_price,
@@ -133,7 +134,27 @@ def test_gbot_grid_workflow_on_bitget(test_setup):
             pytest.fail(f"Fehler beim Platzieren der Order @ {bp_rounded}: {e}")
 
     assert len(placed_ids) > 0, "Keine einzige Order konnte platziert werden"
-    time.sleep(3)
+
+    # --- Telegram-Benachrichtigung ---
+    bot_token = telegram_config.get('bot_token')
+    chat_id   = telegram_config.get('chat_id')
+    order_lines = '\n'.join(
+        f'  Buy {order_amount:.0f} PEPE @ {exchange.round_price(SYMBOL, bp):.8f}'
+        for bp in buy_levels
+        if exchange.round_price(SYMBOL, bp) * order_amount >= 5.0
+    )
+    msg = (
+        f'GBOT TEST: {SYMBOL}\n'
+        f'Leverage: {LEVERAGE}x isolated\n'
+        f'Kapital: {CAPITAL} USDT\n'
+        f'Preis: {price:.8f}\n'
+        f'Grid: {lower:.8f} - {upper:.8f}\n'
+        f'{order_lines}\n'
+        f'{len(placed_ids)} Order(s) platziert - werden in 10s storniert.'
+    )
+    send_message(bot_token, chat_id, msg)
+    print('  Telegram-Benachrichtigung gesendet. Warte 10s...')
+    time.sleep(10)
 
     # --- 5. Orders auf Bitget verifizieren ---
     print(f"[5/5] Verifiziere {len(placed_ids)} Order(s) auf Bitget...")
