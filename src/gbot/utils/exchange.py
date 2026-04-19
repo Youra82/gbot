@@ -82,7 +82,12 @@ class Exchange:
             except Exception as e:
                 logger.warning(f"Hebel setzen fehlgeschlagen (evtl. bereits korrekt): {e}")
         except Exception as e:
-            logger.warning(f"Hebel/Margin-Modus setzen fehlgeschlagen: {e}")
+            logger.debug(f"Margin-Modus setzen fehlgeschlagen (evtl. bereits korrekt): {e}")
+            try:
+                self.exchange.set_leverage(leverage, symbol)
+                logger.info(f"Hebel {leverage}x fuer {symbol} gesetzt (Margin-Modus unveraendert).")
+            except Exception as e2:
+                logger.warning(f"Hebel setzen fehlgeschlagen (evtl. bereits korrekt): {e2}")
 
     # --- Auftraege ---
     def place_limit_order(self, symbol: str, side: str, amount: float, price: float, params: dict = None) -> dict:
