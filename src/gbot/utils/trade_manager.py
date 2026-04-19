@@ -605,11 +605,22 @@ def run_grid_cycle(
 
     if repaired_orders:
         try:
+            fib_meta = tracker.get('fib_meta', {})
+            fib_info = (
+                f"\nFibonacci: {fib_meta.get('lower_label','?')} - {fib_meta.get('upper_label','?')}"
+                f" | Trend: {fib_meta.get('trend','?').upper()}"
+                f"\nSwing High: {fib_meta.get('swing_high','?')} | Swing Low: {fib_meta.get('swing_low','?')}"
+                f" ({fib_meta.get('timeframe','?')})"
+            ) if fib_meta else ""
             send_message(
                 telegram_config.get('bot_token'),
                 telegram_config.get('chat_id'),
-                f"\U0001f527 gbot: {len(repaired_orders)} Order(s) repariert fuer {symbol}\n"
-                + "\n".join(f"\u2022 {o}" for o in repaired_orders),
+                f"\U0001f527 Grid repariert: {symbol}\n\n"
+                f"Bereich: {gc['lower_price']:.4f} - {gc['upper_price']:.4f}\n"
+                f"Stufen: {gc['num_grids']} | Modus: {gc['mode'].upper()}\n"
+                f"Kapital: {gc['total_investment_usdt']} USDT | Hebel: {gc['leverage']}x"
+                f"{fib_info}\n\n"
+                f"Aktive Orders: {len(active_orders)}",
             )
         except Exception:
             pass
