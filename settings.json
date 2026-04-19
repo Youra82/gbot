@@ -3,10 +3,12 @@
         "active_strategies": [
             {
                 "symbol": "AAVE/USDT:USDT",
+                "timeframe": "4h",
                 "active": true
             },
             {
                 "symbol": "SOL/USDT:USDT",
+                "timeframe": "30m",
                 "active": true
             }
         ]

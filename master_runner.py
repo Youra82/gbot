@@ -78,9 +78,13 @@ def main():
                 logging.warning(f"Keine 'symbol' in Strategie-Konfiguration: {strategy}")
                 continue
 
-            logging.info(f"Starte Grid-Bot fuer: {symbol}")
+            timeframe = strategy.get('timeframe')
+            label = f"{symbol} ({timeframe})" if timeframe else symbol
+            logging.info(f"Starte Grid-Bot fuer: {label}")
 
             command = [python, bot_script, '--symbol', symbol]
+            if timeframe:
+                command += ['--timeframe', timeframe]
 
             try:
                 process = subprocess.Popen(command)

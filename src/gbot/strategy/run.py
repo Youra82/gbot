@@ -56,14 +56,20 @@ def setup_logging(symbol: str) -> logging.Logger:
 # Konfiguration laden
 # ---------------------------------------------------------------------------
 
-def load_config(symbol: str) -> dict:
+def load_config(symbol: str, timeframe: str = None) -> dict:
     """
     Laedt die JSON-Konfiguration fuer das angegebene Symbol.
-    Dateiname: config_<SYMBOLCLEAN>.json
+    Mit Timeframe: config_<SYMBOLCLEAN>_<TF>.json
+    Ohne Timeframe: config_<SYMBOLCLEAN>.json (Fallback)
     """
     configs_dir = os.path.join(PROJECT_ROOT, 'src', 'gbot', 'strategy', 'configs')
     safe = symbol.replace('/', '').replace(':', '').replace('-', '_')
-    filename = f"config_{safe}.json"
+
+    if timeframe:
+        filename = f"config_{safe}_{timeframe}.json"
+    else:
+        filename = f"config_{safe}.json"
+
     path = os.path.join(configs_dir, filename)
 
     if not os.path.exists(path):
@@ -114,13 +120,15 @@ def run_for_account(account: dict, telegram_config: dict, params: dict, logger: 
 def main():
     parser = argparse.ArgumentParser(description="gbot Grid-Trading-Skript")
     parser.add_argument('--symbol', required=True, type=str, help="Handelspaar (z.B. BTC/USDT:USDT)")
+    parser.add_argument('--timeframe', required=False, type=str, default=None, help="Zeitfenster (z.B. 4h)")
     args = parser.parse_args()
 
     symbol = args.symbol
+    timeframe = args.timeframe
     logger = setup_logging(symbol)
 
     try:
-        params = load_config(symbol)
+        params = load_config(symbol, timeframe)
         logger.info(f"Konfiguration geladen fuer {symbol}.")
 
         with open(os.path.join(PROJECT_ROOT, 'secret.json'), 'r') as f:
