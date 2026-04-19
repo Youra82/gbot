@@ -221,6 +221,36 @@ def _generate_gbot_chart(results: list, total_capital: float,
         hovertemplate='Portfolio: %{y:.2f} USDT<extra></extra>',
     ))
 
+    # Fill-Marker: SELL = cyan ● (Gewinn realisiert), BUY = rot ✗ (Einstieg)
+    sell_x, sell_y = [], []
+    buy_x,  buy_y  = [], []
+    for r in results:
+        fdf = r.get('fills_df')
+        if fdf is None or fdf.empty:
+            continue
+        for ts, row in fdf.iterrows():
+            idx_pos = portfolio.index.searchsorted(ts, side='right') - 1
+            eq_at = float(portfolio.iloc[max(0, idx_pos)]) if idx_pos >= 0 else total_capital
+            if row['side'] == 'sell':
+                sell_x.append(ts); sell_y.append(eq_at)
+            else:
+                buy_x.append(ts);  buy_y.append(eq_at)
+
+    if sell_x:
+        fig.add_trace(go.Scatter(
+            x=sell_x, y=sell_y, mode='markers',
+            marker=dict(color='#22d3ee', symbol='circle', size=7,
+                        line=dict(width=1, color='#0e7490')),
+            name='Sell ●',
+        ))
+    if buy_x:
+        fig.add_trace(go.Scatter(
+            x=buy_x, y=buy_y, mode='markers',
+            marker=dict(color='#ef4444', symbol='x', size=7,
+                        line=dict(width=2, color='#7f1d1d')),
+            name='Buy ✗',
+        ))
+
     fig.update_layout(
         title=dict(text=title, font=dict(size=11), x=0.5, xanchor='center'),
         height=600, hovermode='x unified', template='plotly_dark',
