@@ -259,8 +259,10 @@ def _run_pipeline(pairs: list, opt_settings: dict) -> int:
             '--settings',     SETTINGS_FILE,
         ]
 
+        env = os.environ.copy()
+        env['PYTHONPATH'] = os.path.join(PROJECT_ROOT, 'src')
         with open(TRIGGER_LOG, 'a', encoding='utf-8') as lf:
-            rc = subprocess.run(cmd, stdout=lf, stderr=lf).returncode
+            rc = subprocess.run(cmd, stdout=lf, stderr=lf, env=env).returncode
         _log(f"PAIR_EXIT sym={sym} tf={tf} rc={rc}")
         if rc != 0:
             any_failed = True
