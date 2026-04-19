@@ -709,6 +709,8 @@ def full_grid_cycle(exchange: Exchange, params: dict, telegram_config: dict, log
             fib_info = (
                 f"\nFibonacci: {fib_meta.get('lower_label','?')} - {fib_meta.get('upper_label','?')}"
                 f" | Trend: {fib_meta.get('trend','?').upper()}"
+                f"\nSwing High: {fib_meta.get('swing_high','?')} | Swing Low: {fib_meta.get('swing_low','?')}"
+                f" ({fib_meta.get('timeframe','?')})"
             ) if fib_meta else ""
 
             msg = (
