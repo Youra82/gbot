@@ -503,7 +503,8 @@ def run_grid_cycle(
                     log.warning(f"Order {order_id} @ {price_key}: Status '{status}' — aus Tracker entfernt.")
                     del active_orders[price_key]
             except Exception as e:
-                log.error(f"Order {order_id} konnte nicht abgerufen werden: {e}")
+                log.error(f"Order {order_id} konnte nicht abgerufen werden — aus Tracker entfernt: {e}")
+                del active_orders[price_key]
 
     # Fills verarbeiten
     for price_key, order_info, fetched_order in filled_entries:
@@ -573,6 +574,71 @@ def run_grid_cycle(
 
 
 # ---------------------------------------------------------------------------
+# Aufraeum- und Ueberwachungsroutinen
+# ---------------------------------------------------------------------------
+
+def check_orphan_positions(
+    exchange: Exchange,
+    symbol: str,
+    tracker: dict,
+    telegram_config: dict,
+    log: logging.Logger,
+):
+    """
+    Prueft ob offene Positionen existieren, obwohl das Grid nicht initialisiert ist.
+    Schliesst verwaiste Positionen automatisch.
+    """
+    if tracker.get('initialized'):
+        return
+    positions = exchange.fetch_open_positions(symbol)
+    if not positions:
+        return
+    log.warning(f"Verwaiste Positionen ({len(positions)}) gefunden — Grid nicht aktiv. Schliesse...")
+    exchange.close_all_positions(symbol)
+    try:
+        send_message(
+            telegram_config.get('bot_token'),
+            telegram_config.get('chat_id'),
+            f"\u26a0\ufe0f gbot: Verwaiste Position(en) fuer {symbol} geschlossen.\n"
+            f"Grid war nicht aktiv \u2014 automatisch bereinigt.",
+        )
+    except Exception:
+        pass
+
+
+def auto_clear_cache(log: logging.Logger):
+    """
+    Loescht Cache-Dateien aelter als auto_clear_cache_days Tage (aus settings.json).
+    """
+    import glob as _glob
+    settings_file = os.path.join(PROJECT_ROOT, 'settings.json')
+    try:
+        with open(settings_file, 'r') as f:
+            settings = json.load(f)
+        days = int(settings.get('optimization_settings', {}).get('auto_clear_cache_days', 30))
+    except Exception:
+        days = 30
+
+    cache_dir = os.path.join(PROJECT_ROOT, 'data', 'cache')
+    if not os.path.isdir(cache_dir):
+        return
+
+    cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+    deleted = 0
+    for path in _glob.glob(os.path.join(cache_dir, '**', '*'), recursive=True):
+        if not os.path.isfile(path):
+            continue
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                deleted += 1
+        except OSError:
+            pass
+    if deleted:
+        log.info(f"Cache-Cleanup: {deleted} Datei(en) aelter als {days} Tage geloescht.")
+
+
+# ---------------------------------------------------------------------------
 # Haupt-Einstiegspunkt
 # ---------------------------------------------------------------------------
 
@@ -587,7 +653,12 @@ def full_grid_cycle(exchange: Exchange, params: dict, telegram_config: dict, log
     tracker_path = get_tracker_file_path(symbol)
     tracker = read_tracker(tracker_path)
 
+    # Cache-Cleanup (loescht nur wenn Dateien aelter als auto_clear_cache_days)
+    auto_clear_cache(log)
+
     if not tracker.get('initialized'):
+        # Verwaiste Positionen schliessen bevor Grid initialisiert wird
+        check_orphan_positions(exchange, symbol, tracker, telegram_config, log)
         log.info("Grid noch nicht initialisiert. Starte Erstinitialisierung...")
         try:
             tracker = initialize_grid(exchange, params, log)
