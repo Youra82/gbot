@@ -1,5 +1,32 @@
 {
     "live_trading_settings": {
         "active_strategies": []
+    },
+    "optimization_settings": {
+        "enabled": true,
+        "_info": "symbols_to_optimize/timeframes_to_optimize: 'auto' liest active_strategies aus, oder explizite Liste wie ['BTC', 'ETH']",
+        "symbols_to_optimize": "auto",
+        "timeframes_to_optimize": ["30m", "1h"],
+        "lookback_days": "auto",
+        "start_capital": 15,
+        "num_trials": 500,
+        "cpu_cores": -1,
+        "mode": "best_profit",
+        "auto_clear_cache_days": 30,
+        "send_telegram_on_completion": true,
+        "constraints": {
+            "max_drawdown_pct": 30,
+            "min_fills": 20
+        },
+        "schedule": {
+            "_info": "day_of_week: 0=Montag, 6=Sonntag | hour: 0-23 (24h Format)",
+            "day_of_week": 6,
+            "hour": 2,
+            "minute": 0,
+            "interval": {
+                "value": 7,
+                "unit": "days"
+            }
+        }
     }
 }
