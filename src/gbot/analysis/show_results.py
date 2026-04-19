@@ -312,10 +312,14 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
 
     max_team_size = min(5, len(individual))
     total_combos = sum(len(list(combinations(individual, k))) for k in range(1, max_team_size + 1))
-    print(f"\n  Pruefe {total_combos} Portfolio-Kombinationen...")
+    print(f"\n  Pruefe {total_combos:,} Portfolio-Kombinationen...\n")
+
+    checked = 0
+    PROGRESS_INTERVAL = max(1, total_combos // 200)
 
     for size in range(1, max_team_size + 1):
         for combo in combinations(individual, size):
+            checked += 1
             results_combo = [r for _, _, r in combo]
             if any(r['roi_pct'] <= -9999 for r in results_combo):
                 continue
@@ -336,6 +340,17 @@ def run_auto_portfolio(start_date: str, end_date: str, capital: float, target_ma
                     'max_dd_individual': max(r['max_drawdown_pct'] for r in results_combo),
                     'fills': sum(r['total_fills'] for r in results_combo),
                 }
+
+            if checked % PROGRESS_INTERVAL == 0 or checked == total_combos:
+                pct = checked / total_combos * 100
+                if best_team:
+                    syms = ' + '.join(f"{r['symbol'].split('/')[0]}/{r['timeframe']}" for _, _, r in best_team)
+                    best_str = f"Bestes: {syms}  ROI {best_roi:+.1f}%  DD {best_stats['combined_dd']:.1f}%"
+                else:
+                    best_str = "kein gueltiges Team bisher"
+                print(f"\r  [{pct:5.1f}%] {checked:>{len(str(total_combos))}}/{total_combos}  —  {best_str:<60}", end='', flush=True)
+
+    print()  # Zeilenumbruch nach Fortschrittsanzeige
 
     sep()
     if not best_team:
