@@ -83,25 +83,39 @@ class Exchange:
             logger.error(f"Unerwarteter Fehler beim Setzen des Margin-Modus fuer {symbol}: {e}")
 
     def set_leverage(self, symbol: str, leverage: int, margin_mode: str = 'isolated'):
+        leverage = int(leverage)
+        already_set_phrases = ('Leverage not changed', 'leverage is not modified', '40052')
+
+        def _already_set(e):
+            return any(p in str(e) for p in already_set_phrases)
+
+        # Versuch 1: single call mit marginMode (dnabot/mbot Stil)
         try:
-            leverage = int(leverage)
+            params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT', 'marginMode': margin_mode.lower()}
+            self.exchange.set_leverage(leverage, symbol, params=params)
+            logger.info(f"Hebel {leverage}x ({margin_mode}) fuer {symbol} gesetzt.")
+            return
+        except ccxt.ExchangeError as e:
+            if _already_set(e):
+                logger.info(f"Hebel fuer {symbol} bereits {leverage}x (unveraendert).")
+                return
+
+        # Versuch 2: holdSide long+short (ltbbot Stil)
+        try:
             params = {'productType': 'USDT-FUTURES', 'marginCoin': 'USDT'}
             if margin_mode.lower() == 'isolated':
                 self.exchange.set_leverage(leverage, symbol, params={**params, 'holdSide': 'long'})
-                import time as _time; _time.sleep(0.2)
+                time.sleep(0.2)
                 self.exchange.set_leverage(leverage, symbol, params={**params, 'holdSide': 'short'})
             else:
                 self.exchange.set_leverage(leverage, symbol, params=params)
-            logger.info(f"Hebel {leverage}x ({margin_mode}) fuer {symbol} gesetzt.")
+            logger.info(f"Hebel {leverage}x ({margin_mode}) fuer {symbol} gesetzt (Versuch 2).")
+            return
         except ccxt.ExchangeError as e:
-            if 'Leverage not changed' in str(e) or 'leverage is not modified' in str(e).lower() or '40052' in str(e):
+            if _already_set(e):
                 logger.info(f"Hebel fuer {symbol} bereits {leverage}x (unveraendert).")
-            elif '40014' in str(e):
-                logger.warning(f"Hebel konnte nicht gesetzt werden (API-Key Permission fehlt) — wird uebersprungen.")
-            else:
-                logger.error(f"Fehler beim Setzen des Hebels fuer {symbol}: {e}")
-        except Exception as e:
-            logger.error(f"Unerwarteter Fehler beim Setzen des Hebels fuer {symbol}: {e}")
+                return
+            logger.warning(f"Hebel konnte nicht gesetzt werden: {e}")
 
     # --- Auftraege ---
     def place_limit_order(self, symbol: str, side: str, amount: float, price: float, params: dict = None, margin_mode: str = 'isolated') -> dict:
