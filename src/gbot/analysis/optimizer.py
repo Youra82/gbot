@@ -312,7 +312,7 @@ def write_config(result: dict, settings_file: str = None) -> str:
     Gibt den Pfad zur Config-Datei zurueck.
     """
     symbol = result['symbol']
-    safe = symbol.replace('/', '_').replace(':', '_')
+    safe = symbol.replace('/', '').replace(':', '').replace('-', '_')
     os.makedirs(CONFIGS_DIR, exist_ok=True)
     tf = result.get('timeframe', '').replace('/', '').replace(':', '')
     config_path = os.path.join(CONFIGS_DIR, f"config_{safe}_{tf}.json")
