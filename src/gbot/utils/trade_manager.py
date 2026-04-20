@@ -190,8 +190,9 @@ def _place_grid_orders(
             order = exchange.place_limit_order(symbol, 'buy', amount_per_grid, price_r, margin_mode=margin_mode)
             entry = _order_entry(order, 'buy', price_r, amount_per_grid, now, is_opener=True)
 
-            # TP sofort mitplatzieren — kein Warten auf naechsten Bot-Zyklus
-            tp_price = find_next_sell_level(price_r, levels)
+            # TP sofort mitplatzieren — ungerundeten Originalpreis verwenden
+            # damit find_next_sell_level das naechste Level korrekt findet
+            tp_price = find_next_sell_level(price, levels)
             if tp_price is not None:
                 tp_price_r = exchange.round_price(symbol, tp_price)
                 tp_order = exchange.place_trigger_market_order(symbol, 'sell', amount_per_grid, tp_price_r, reduce=True)
@@ -556,7 +557,9 @@ def run_grid_cycle(
                     try:
                         new_order = exchange.place_limit_order(symbol, 'buy', fill_amount, buy_price_r, margin_mode=margin_mode)
                         entry = _order_entry(new_order, 'buy', buy_price_r, fill_amount, now, is_opener=True)
-                        next_tp = find_next_sell_level(buy_price_r, levels)
+                        # Originalpreis aus levels finden fuer korrektes next-level lookup
+                        buy_orig = min(levels, key=lambda l: abs(l - buy_price_r))
+                        next_tp = find_next_sell_level(buy_orig, levels)
                         if next_tp is not None:
                             tp_r = exchange.round_price(symbol, next_tp)
                             tp_ord = exchange.place_trigger_market_order(symbol, 'sell', fill_amount, tp_r, reduce=True)
@@ -578,7 +581,8 @@ def run_grid_cycle(
                 try:
                     new_order = exchange.place_limit_order(symbol, 'buy', order_info['amount'], order_info['price'], margin_mode=margin_mode)
                     entry = _order_entry(new_order, 'buy', order_info['price'], order_info['amount'], now, is_opener=True)
-                    next_tp = find_next_sell_level(order_info['price'], levels)
+                    orig_price = min(levels, key=lambda l: abs(l - order_info['price']))
+                    next_tp = find_next_sell_level(orig_price, levels)
                     if next_tp is not None:
                         tp_r = exchange.round_price(symbol, next_tp)
                         tp_ord = exchange.place_trigger_market_order(symbol, 'sell', order_info['amount'], tp_r, reduce=True)
