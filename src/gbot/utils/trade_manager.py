@@ -190,16 +190,16 @@ def _place_grid_orders(
             order = exchange.place_limit_order(symbol, 'buy', amount_per_grid, price_r, margin_mode=margin_mode)
             entry = _order_entry(order, 'buy', price_r, amount_per_grid, now, is_opener=True)
 
-            # TP sofort mitplatzieren — ungerundeten Originalpreis verwenden
-            # damit find_next_sell_level das naechste Level korrekt findet
+            # Sell Limit (reduceOnly) sofort mitplatzieren — kein Trigger, exakter Preis
             tp_price = find_next_sell_level(price, levels)
             if tp_price is not None:
                 tp_price_r = exchange.round_price(symbol, tp_price)
-                tp_order = exchange.place_trigger_market_order(symbol, 'sell', amount_per_grid, tp_price_r, reduce=True)
+                tp_order = exchange.place_limit_order(symbol, 'sell', amount_per_grid, tp_price_r,
+                                                      params={'reduceOnly': True}, margin_mode=margin_mode)
                 if tp_order:
                     entry['tp_order_id'] = tp_order['id']
                     entry['tp_price'] = tp_price_r
-                    log.info(f"  TP-Trigger fuer Buy @ {price_r} → Sell @ {tp_price_r}")
+                    log.info(f"  TP Sell Limit fuer Buy @ {price_r} → Sell @ {tp_price_r}")
                 time.sleep(0.2)
 
             active_orders[str(price_r)] = entry
@@ -208,7 +208,7 @@ def _place_grid_orders(
         except Exception as e:
             log.error(f"  BUY-Order bei {price_r} fehlgeschlagen: {e}")
 
-    log.info(f"  {placed} Buy-Orders + TP-Trigger platziert.")
+    log.info(f"  {placed} Buy-Orders + TP Sell Limits platziert.")
     return active_orders
 
 
@@ -495,16 +495,14 @@ def run_grid_cycle(
     mode = gc['mode']
     margin_mode = gc.get('margin_mode', 'isolated')
 
-    # Offene regulaere Orders und Trigger-Orders holen
+    # Alle offenen Limit-Orders holen (Buy-Opener und Sell-TP sind beide Limit-Orders)
     try:
         open_orders = exchange.fetch_open_orders(symbol)
-        open_trigger_orders = exchange.fetch_open_trigger_orders(symbol)
     except Exception as e:
         log.error(f"Fehler beim Abrufen offener Orders: {e}")
         return tracker
 
     open_order_ids = {o['id'] for o in open_orders}
-    open_trigger_ids = {o['id'] for o in open_trigger_orders}
     active_orders = tracker.get('active_orders', {})
     now = datetime.now(timezone.utc).isoformat()
     perf = tracker.setdefault('performance', {
@@ -518,7 +516,7 @@ def run_grid_cycle(
         order_id = order_info.get('order_id')
         tp_order_id = order_info.get('tp_order_id')
         buy_is_open = order_id in open_order_ids
-        tp_is_open = (tp_order_id in open_trigger_ids) if tp_order_id else False
+        tp_is_open = (tp_order_id in open_order_ids) if tp_order_id else False
 
         # Fall A: Buy offen, TP offen → normal wartend
         if buy_is_open and (tp_is_open or not tp_order_id):
@@ -538,7 +536,7 @@ def run_grid_cycle(
                 fill_amount = float(fetched.get('filled') or order_info['amount'])
                 tp_price = order_info.get('tp_price', fill_price + spacing)
                 fee_buy = fill_price * fill_amount * 0.0006
-                fee_tp = tp_price * fill_amount * 0.0004  # market order ~0.04%
+                fee_tp = tp_price * fill_amount * 0.0002  # limit maker ~0.02%
                 pnl = (tp_price - fill_price) * fill_amount - fee_buy - fee_tp
 
                 perf['buy_fills'] += 1
@@ -562,7 +560,8 @@ def run_grid_cycle(
                         next_tp = find_next_sell_level(buy_orig, levels)
                         if next_tp is not None:
                             tp_r = exchange.round_price(symbol, next_tp)
-                            tp_ord = exchange.place_trigger_market_order(symbol, 'sell', fill_amount, tp_r, reduce=True)
+                            tp_ord = exchange.place_limit_order(symbol, 'sell', fill_amount, tp_r,
+                                                                params={'reduceOnly': True}, margin_mode=margin_mode)
                             if tp_ord:
                                 entry['tp_order_id'] = tp_ord['id']
                                 entry['tp_price'] = tp_r
@@ -574,9 +573,9 @@ def run_grid_cycle(
                 _send_fill_notification(telegram_config, symbol, 'buy', fill_price, fill_amount, pnl, perf)
 
             else:
-                # Buy storniert → TP stornieren und neu platzieren
+                # Buy storniert → TP (Sell Limit) auch stornieren und neu platzieren
                 if tp_order_id:
-                    exchange.cancel_trigger_order(tp_order_id, symbol)
+                    exchange.cancel_order(tp_order_id, symbol)
                 del active_orders[price_key]
                 try:
                     new_order = exchange.place_limit_order(symbol, 'buy', order_info['amount'], order_info['price'], margin_mode=margin_mode)
@@ -585,7 +584,8 @@ def run_grid_cycle(
                     next_tp = find_next_sell_level(orig_price, levels)
                     if next_tp is not None:
                         tp_r = exchange.round_price(symbol, next_tp)
-                        tp_ord = exchange.place_trigger_market_order(symbol, 'sell', order_info['amount'], tp_r, reduce=True)
+                        tp_ord = exchange.place_limit_order(symbol, 'sell', order_info['amount'], tp_r,
+                                                            params={'reduceOnly': True}, margin_mode=margin_mode)
                         if tp_ord:
                             entry['tp_order_id'] = tp_ord['id']
                             entry['tp_price'] = tp_r
@@ -595,16 +595,17 @@ def run_grid_cycle(
                 except Exception as re:
                     log.error(f"  Reparatur fehlgeschlagen @ {price_key}: {re}")
 
-        # Fall C: Buy gefuellt, TP noch offen → Position laeuft, nichts zu tun
+        # Fall C: Buy gefuellt, TP Sell Limit noch offen → Position laeuft, nichts zu tun
         elif not buy_is_open and tp_is_open:
-            log.info(f"  BUY @ {price_key} gefuellt, TP-Trigger laeuft noch — warte.")
+            log.info(f"  BUY @ {price_key} gefuellt, TP Sell Limit laeuft noch — warte.")
 
-        # Fall D: Buy noch offen, TP fehlt → TP neu platzieren
+        # Fall D: Buy noch offen, TP Sell Limit fehlt → neu platzieren
         elif buy_is_open and not tp_is_open and tp_order_id:
             tp_price = order_info.get('tp_price')
             if tp_price:
-                log.warning(f"  TP-Trigger fuer Buy @ {price_key} fehlt — platziere neu @ {tp_price}")
-                tp_ord = exchange.place_trigger_market_order(symbol, 'sell', order_info['amount'], tp_price, reduce=True)
+                log.warning(f"  TP Sell Limit fuer Buy @ {price_key} fehlt — platziere neu @ {tp_price}")
+                tp_ord = exchange.place_limit_order(symbol, 'sell', order_info['amount'], tp_price,
+                                                    params={'reduceOnly': True}, margin_mode=margin_mode)
                 if tp_ord:
                     active_orders[price_key]['tp_order_id'] = tp_ord['id']
 
