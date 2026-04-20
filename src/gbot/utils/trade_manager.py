@@ -189,13 +189,7 @@ def _place_grid_orders(
             price_r = exchange.round_price(symbol, price)
             try:
                 order = exchange.place_limit_order(symbol, side, amount_per_grid, price_r, margin_mode=margin_mode)
-                active_orders[str(price_r)] = {
-                    'order_id': order['id'],
-                    'side': side,
-                    'price': price_r,
-                    'amount': amount_per_grid,
-                    'placed_at': now,
-                }
+                active_orders[str(price_r)] = _order_entry(order, side, price_r, amount_per_grid, now, is_opener=True)
                 placed += 1
                 time.sleep(0.3)
             except Exception as e:
@@ -203,6 +197,17 @@ def _place_grid_orders(
 
     log.info(f"  {placed} Orders platziert.")
     return active_orders
+
+
+def _order_entry(order: dict, side: str, price_r: float, amount: float, now: str, is_opener: bool) -> dict:
+    return {
+        'order_id': order['id'],
+        'side': side,
+        'price': price_r,
+        'amount': amount,
+        'placed_at': now,
+        'is_opener': is_opener,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -506,9 +511,10 @@ def run_grid_cycle(
                     log.warning(f"Order {order_id} @ {price_key}: Status '{status}' — wird neu platziert.")
                     del active_orders[price_key]
                     try:
+                        repair_params = {} if order_info.get('is_opener', True) else {'reduceOnly': True}
                         new_order = exchange.place_limit_order(
                             symbol, order_info['side'], order_info['amount'], order_info['price'],
-                            margin_mode=margin_mode,
+                            params=repair_params, margin_mode=margin_mode,
                         )
                         active_orders[price_key] = {**order_info, 'order_id': new_order['id']}
                         repaired_orders.append(f"{order_info['side'].upper()} @ {order_info['price']}")
@@ -528,12 +534,19 @@ def run_grid_cycle(
 
         log.info(f"Fill: {side.upper()} {fill_amount} {symbol} @ {fill_price:.4f}")
 
+        is_opener = order_info.get('is_opener', True)
         fee = fill_price * fill_amount * 0.0006  # ~0.06% Taker-Gebuehr
-        if side == 'sell':
+
+        if not is_opener:
+            # Closer gefuellt = TP genommen
             pnl = spacing * fill_amount - 2 * fee
+        else:
+            # Opener gefuellt = Position eroeffnet
+            pnl = -fee
+
+        if side == 'sell':
             perf['sell_fills'] += 1
         else:
-            pnl = -fee
             perf['buy_fills'] += 1
 
         perf['total_fills'] += 1
@@ -543,37 +556,48 @@ def run_grid_cycle(
 
         del active_orders[price_key]
 
-        # Nachfolge-Order platzieren
-        if side == 'buy':
-            next_price = find_next_sell_level(fill_price, levels)
-            next_side = 'sell'
+        # Nachfolge-Order bestimmen:
+        # Opener gefuellt → Closer platzieren (reduceOnly = Position schliessen = TP)
+        # Closer gefuellt → Opener platzieren (neue Position eroeffnen)
+        if is_opener:
+            if side == 'buy':
+                next_price = find_next_sell_level(fill_price, levels)
+                next_side = 'sell'
+            else:
+                next_price = find_next_buy_level(fill_price, levels)
+                next_side = 'buy'
             next_amount = fill_amount
+            next_params = {'reduceOnly': True}
+            next_is_opener = False
+            log.info(f"  Opener gefuellt → platziere Closer {next_side.upper()} @ naechstes Level")
         else:
-            next_price = find_next_buy_level(fill_price, levels)
-            next_side = 'buy'
+            if side == 'sell':
+                next_price = find_next_buy_level(fill_price, levels)
+                next_side = 'buy'
+            else:
+                next_price = find_next_sell_level(fill_price, levels)
+                next_side = 'sell'
             next_amount = amount_per_grid
+            next_params = {}
+            next_is_opener = True
+            log.info(f"  Closer gefuellt (TP) → platziere neuen Opener {next_side.upper()} @ naechstes Level")
 
         if next_price is not None:
             price_r = exchange.round_price(symbol, next_price)
             key = str(price_r)
             if key not in active_orders:
                 try:
-                    new_order = exchange.place_limit_order(symbol, next_side, next_amount, price_r, margin_mode=margin_mode)
-                    entry = {
-                        'order_id': new_order['id'],
-                        'side': next_side,
-                        'price': price_r,
-                        'amount': next_amount,
-                        'placed_at': fill_time,
-                    }
-                    if next_side == 'sell':
-                        entry['paired_buy_price'] = fill_price
+                    new_order = exchange.place_limit_order(symbol, next_side, next_amount, price_r, params=next_params, margin_mode=margin_mode)
+                    entry = _order_entry(new_order, next_side, price_r, next_amount, fill_time, next_is_opener)
+                    if not next_is_opener:
+                        entry['paired_open_price'] = fill_price
                     active_orders[key] = entry
-                    log.info(f"  -> {next_side.upper()}-Order @ {price_r:.4f}")
+                    label = 'CLOSER' if not next_is_opener else 'OPENER'
+                    log.info(f"  -> [{label}] {next_side.upper()}-Order @ {price_r:.4f}")
                 except Exception as e:
                     log.error(f"  {next_side.upper()}-Order @ {price_r} fehlgeschlagen: {e}")
         else:
-            edge = 'oberem' if side == 'buy' else 'unterem'
+            edge = 'oberen' if (is_opener and side == 'buy') or (not is_opener and side == 'sell') else 'unteren'
             log.info(f"  Kein naechstes Level (am {edge} Grid-Rand).")
 
         _send_fill_notification(telegram_config, symbol, side, fill_price, fill_amount, pnl, perf)
