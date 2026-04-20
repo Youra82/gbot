@@ -170,21 +170,23 @@ def _place_grid_orders(
     margin_mode: str = 'isolated',
 ) -> dict:
     """
-    Platziert alle initialen Grid-Orders (Buy und Sell).
-    Wird sowohl bei Erstinitialisierung als auch beim Rebalancing verwendet.
+    Platziert alle initialen Grid-Orders.
+    Nur Buy-Opener werden initial platziert. Sell-Orders entstehen ausschliesslich
+    nach einem Buy-Fill als Closer (reduceOnly), um Konflikte zu vermeiden.
 
     Returns:
         dict: active_orders {price_str: order_info}
     """
     buy_levels, sell_levels = split_levels_by_price(levels, current_price, mode)
     log.info(f"  Kauf-Levels  ({len(buy_levels)}): {[round(p, 4) for p in buy_levels]}")
-    log.info(f"  Verkauf-Levels ({len(sell_levels)}): {[round(p, 4) for p in sell_levels]}")
+    log.info(f"  Verkauf-Levels werden nach Buy-Fills als Closer platziert (kein initialer Sell).")
 
     active_orders = {}
     placed = 0
     now = datetime.now(timezone.utc).isoformat()
 
-    for side, price_list in [('buy', buy_levels), ('sell', sell_levels)]:
+    # Nur Buy-Opener initial platzieren — Sells kommen nach Fills als reduceOnly-Closer
+    for side, price_list in [('buy', buy_levels)]:
         for price in price_list:
             price_r = exchange.round_price(symbol, price)
             try:
