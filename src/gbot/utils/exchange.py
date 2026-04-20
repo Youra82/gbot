@@ -148,8 +148,47 @@ class Exchange:
             logger.error(f"Fehler beim Stornieren der Order {order_id}: {e}")
             raise
 
+    def place_trigger_market_order(self, symbol: str, side: str, amount: float, trigger_price: float, reduce: bool = False) -> Optional[dict]:
+        """Trigger-Market-Order platzieren (TP oder SL). Feuert Market-Order wenn Preis erreicht."""
+        try:
+            trigger_price_str = self.exchange.price_to_precision(symbol, trigger_price)
+            amount_str = self.exchange.amount_to_precision(symbol, amount)
+            params = {
+                'triggerPrice': trigger_price_str,
+                'reduceOnly': reduce,
+                'productType': 'USDT-FUTURES',
+            }
+            order = self.exchange.create_order(symbol, 'market', side, float(amount_str), None, params)
+            logger.info(f"Trigger-Market-Order platziert: {side.upper()} {amount_str} {symbol} @ trigger {trigger_price_str} | ID: {order.get('id')}")
+            return order
+        except Exception as e:
+            logger.error(f"Fehler beim Platzieren der Trigger-Order ({side} {amount} {symbol} @ {trigger_price}): {e}")
+            return None
+
+    def cancel_trigger_order(self, order_id: str, symbol: str) -> dict:
+        """Trigger-Order (TP/SL Plan-Order) stornieren."""
+        try:
+            result = self.exchange.cancel_order(order_id, symbol, params={'productType': 'USDT-FUTURES', 'planType': 'normal_plan'})
+            logger.info(f"Trigger-Order {order_id} storniert.")
+            return result
+        except ccxt.OrderNotFound:
+            logger.warning(f"Trigger-Order {order_id} nicht gefunden (evtl. bereits ausgefuehrt oder storniert).")
+            return {}
+        except Exception as e:
+            logger.warning(f"Trigger-Order {order_id} konnte nicht storniert werden: {e}")
+            return {}
+
+    def fetch_open_trigger_orders(self, symbol: str) -> List[dict]:
+        """Offene Trigger-Orders (Plan-Orders: TP/SL) abrufen."""
+        try:
+            params = {'productType': 'USDT-FUTURES', 'planType': 'normal_plan'}
+            return self.exchange.fetch_open_orders(symbol, params=params)
+        except Exception as e:
+            logger.warning(f"Konnte offene Trigger-Orders fuer {symbol} nicht abrufen: {e}")
+            return []
+
     def fetch_open_orders(self, symbol: str) -> List[dict]:
-        """Alle offenen Orders fuer ein Symbol abrufen."""
+        """Alle offenen regulaeren Orders fuer ein Symbol abrufen."""
         try:
             orders = self.exchange.fetch_open_orders(symbol, params={'productType': 'USDT-FUTURES'})
             return orders
@@ -166,17 +205,23 @@ class Exchange:
             raise
 
     def cancel_all_orders(self, symbol: str) -> int:
-        """Alle offenen Orders fuer ein Symbol stornieren. Gibt Anzahl zurueck."""
-        open_orders = self.fetch_open_orders(symbol)
+        """Alle offenen regulaeren und Trigger-Orders fuer ein Symbol stornieren."""
         count = 0
-        for order in open_orders:
+        for order in self.fetch_open_orders(symbol):
             try:
                 self.cancel_order(order['id'], symbol)
                 count += 1
                 time.sleep(0.2)
             except Exception as e:
                 logger.warning(f"Konnte Order {order['id']} nicht stornieren: {e}")
-        logger.info(f"{count} Orders fuer {symbol} storniert.")
+        for order in self.fetch_open_trigger_orders(symbol):
+            try:
+                self.cancel_trigger_order(order['id'], symbol)
+                count += 1
+                time.sleep(0.2)
+            except Exception as e:
+                logger.warning(f"Konnte Trigger-Order {order['id']} nicht stornieren: {e}")
+        logger.info(f"{count} Orders (inkl. Trigger) fuer {symbol} storniert.")
         return count
 
     def get_market_precision(self, symbol: str) -> dict:

@@ -171,33 +171,43 @@ def _place_grid_orders(
 ) -> dict:
     """
     Platziert alle initialen Grid-Orders.
-    Nur Buy-Opener werden initial platziert. Sell-Orders entstehen ausschliesslich
-    nach einem Buy-Fill als Closer (reduceOnly), um Konflikte zu vermeiden.
+    Fuer jedes Buy-Level wird sofort eine TP-Trigger-Order am naechsten Level
+    mitplatziert. Keine Verzoegerung durch Bot-Zyklen.
 
     Returns:
         dict: active_orders {price_str: order_info}
     """
-    buy_levels, sell_levels = split_levels_by_price(levels, current_price, mode)
+    buy_levels, _ = split_levels_by_price(levels, current_price, mode)
     log.info(f"  Kauf-Levels  ({len(buy_levels)}): {[round(p, 4) for p in buy_levels]}")
-    log.info(f"  Verkauf-Levels werden nach Buy-Fills als Closer platziert (kein initialer Sell).")
 
     active_orders = {}
     placed = 0
     now = datetime.now(timezone.utc).isoformat()
 
-    # Nur Buy-Opener initial platzieren — Sells kommen nach Fills als reduceOnly-Closer
-    for side, price_list in [('buy', buy_levels)]:
-        for price in price_list:
-            price_r = exchange.round_price(symbol, price)
-            try:
-                order = exchange.place_limit_order(symbol, side, amount_per_grid, price_r, margin_mode=margin_mode)
-                active_orders[str(price_r)] = _order_entry(order, side, price_r, amount_per_grid, now, is_opener=True)
-                placed += 1
-                time.sleep(0.3)
-            except Exception as e:
-                log.error(f"  {side.upper()}-Order bei {price_r} fehlgeschlagen: {e}")
+    for price in buy_levels:
+        price_r = exchange.round_price(symbol, price)
+        try:
+            order = exchange.place_limit_order(symbol, 'buy', amount_per_grid, price_r, margin_mode=margin_mode)
+            entry = _order_entry(order, 'buy', price_r, amount_per_grid, now, is_opener=True)
 
-    log.info(f"  {placed} Orders platziert.")
+            # TP sofort mitplatzieren — kein Warten auf naechsten Bot-Zyklus
+            tp_price = find_next_sell_level(price_r, levels)
+            if tp_price is not None:
+                tp_price_r = exchange.round_price(symbol, tp_price)
+                tp_order = exchange.place_trigger_market_order(symbol, 'sell', amount_per_grid, tp_price_r, reduce=True)
+                if tp_order:
+                    entry['tp_order_id'] = tp_order['id']
+                    entry['tp_price'] = tp_price_r
+                    log.info(f"  TP-Trigger fuer Buy @ {price_r} → Sell @ {tp_price_r}")
+                time.sleep(0.2)
+
+            active_orders[str(price_r)] = entry
+            placed += 1
+            time.sleep(0.3)
+        except Exception as e:
+            log.error(f"  BUY-Order bei {price_r} fehlgeschlagen: {e}")
+
+    log.info(f"  {placed} Buy-Orders + TP-Trigger platziert.")
     return active_orders
 
 
@@ -484,125 +494,115 @@ def run_grid_cycle(
     mode = gc['mode']
     margin_mode = gc.get('margin_mode', 'isolated')
 
-    # Offene Orders von der Boerse holen
+    # Offene regulaere Orders und Trigger-Orders holen
     try:
         open_orders = exchange.fetch_open_orders(symbol)
+        open_trigger_orders = exchange.fetch_open_trigger_orders(symbol)
     except Exception as e:
         log.error(f"Fehler beim Abrufen offener Orders: {e}")
         return tracker
 
     open_order_ids = {o['id'] for o in open_orders}
+    open_trigger_ids = {o['id'] for o in open_trigger_orders}
     active_orders = tracker.get('active_orders', {})
+    now = datetime.now(timezone.utc).isoformat()
     perf = tracker.setdefault('performance', {
         'total_fills': 0, 'buy_fills': 0, 'sell_fills': 0,
         'realized_pnl_usdt': 0.0, 'fee_paid_usdt': 0.0, 'last_fill_at': None,
     })
 
-    # Fills erkennen: im Tracker vorhandene Orders die nicht mehr offen sind
-    filled_entries = []
     repaired_orders = []
+
     for price_key, order_info in list(active_orders.items()):
         order_id = order_info.get('order_id')
-        if order_id not in open_order_ids:
+        tp_order_id = order_info.get('tp_order_id')
+        buy_is_open = order_id in open_order_ids
+        tp_is_open = (tp_order_id in open_trigger_ids) if tp_order_id else False
+
+        # Fall A: Buy offen, TP offen → normal wartend
+        if buy_is_open and (tp_is_open or not tp_order_id):
+            continue
+
+        # Fall B: Buy gefuellt (nicht mehr offen), TP gefeuert (auch weg) → Zyklus abgeschlossen
+        if not buy_is_open and not tp_is_open and tp_order_id:
             try:
                 fetched = exchange.fetch_order(order_id, symbol)
                 status = fetched.get('status', 'unknown')
-                if status == 'closed':
-                    filled_entries.append((price_key, order_info, fetched))
-                else:
-                    log.warning(f"Order {order_id} @ {price_key}: Status '{status}' — wird neu platziert.")
-                    del active_orders[price_key]
-                    try:
-                        repair_params = {} if order_info.get('is_opener', True) else {'reduceOnly': True}
-                        new_order = exchange.place_limit_order(
-                            symbol, order_info['side'], order_info['amount'], order_info['price'],
-                            params=repair_params, margin_mode=margin_mode,
-                        )
-                        active_orders[price_key] = {**order_info, 'order_id': new_order['id']}
-                        repaired_orders.append(f"{order_info['side'].upper()} @ {order_info['price']}")
-                        log.info(f"  Order neu platziert: {order_info['side'].upper()} @ {order_info['price']}")
-                    except Exception as re:
-                        log.error(f"  Neu-Platzierung fehlgeschlagen @ {price_key}: {re}")
-            except Exception as e:
-                log.error(f"Order {order_id} konnte nicht abgerufen werden — aus Tracker entfernt: {e}")
+            except Exception:
+                status = 'unknown'
+
+            if status == 'closed':
+                # Buy war gefuellt, TP hat gefeuert → Profit-Zyklus
+                fill_price = float(fetched.get('average') or fetched.get('price') or order_info['price'])
+                fill_amount = float(fetched.get('filled') or order_info['amount'])
+                tp_price = order_info.get('tp_price', fill_price + spacing)
+                fee_buy = fill_price * fill_amount * 0.0006
+                fee_tp = tp_price * fill_amount * 0.0004  # market order ~0.04%
+                pnl = (tp_price - fill_price) * fill_amount - fee_buy - fee_tp
+
+                perf['buy_fills'] += 1
+                perf['total_fills'] += 1
+                perf['realized_pnl_usdt'] = round(perf.get('realized_pnl_usdt', 0.0) + pnl, 4)
+                perf['fee_paid_usdt'] = round(perf.get('fee_paid_usdt', 0.0) + fee_buy + fee_tp, 4)
+                perf['last_fill_at'] = now
+
+                log.info(f"TP-Zyklus: BUY @ {fill_price:.4f} → TP @ {tp_price:.4f} | PnL: {pnl:+.4f} USDT")
                 del active_orders[price_key]
 
-    # Fills verarbeiten
-    for price_key, order_info, fetched_order in filled_entries:
-        side = order_info['side']
-        fill_price = float(fetched_order.get('average') or fetched_order.get('price') or order_info['price'])
-        fill_amount = float(fetched_order.get('filled') or order_info['amount'])
-        fill_time = datetime.now(timezone.utc).isoformat()
+                # Neuen Buy + TP am gleichen Level platzieren
+                buy_price_r = order_info['price']
+                key = str(buy_price_r)
+                if key not in active_orders:
+                    try:
+                        new_order = exchange.place_limit_order(symbol, 'buy', fill_amount, buy_price_r, margin_mode=margin_mode)
+                        entry = _order_entry(new_order, 'buy', buy_price_r, fill_amount, now, is_opener=True)
+                        next_tp = find_next_sell_level(buy_price_r, levels)
+                        if next_tp is not None:
+                            tp_r = exchange.round_price(symbol, next_tp)
+                            tp_ord = exchange.place_trigger_market_order(symbol, 'sell', fill_amount, tp_r, reduce=True)
+                            if tp_ord:
+                                entry['tp_order_id'] = tp_ord['id']
+                                entry['tp_price'] = tp_r
+                        active_orders[key] = entry
+                        log.info(f"  -> Neuer Buy+TP platziert @ {buy_price_r:.4f}")
+                    except Exception as e:
+                        log.error(f"  Neuer Buy+TP fehlgeschlagen @ {buy_price_r}: {e}")
 
-        log.info(f"Fill: {side.upper()} {fill_amount} {symbol} @ {fill_price:.4f}")
+                _send_fill_notification(telegram_config, symbol, 'buy', fill_price, fill_amount, pnl, perf)
 
-        is_opener = order_info.get('is_opener', True)
-        fee = fill_price * fill_amount * 0.0006  # ~0.06% Taker-Gebuehr
-
-        if not is_opener:
-            # Closer gefuellt = TP genommen
-            pnl = spacing * fill_amount - 2 * fee
-        else:
-            # Opener gefuellt = Position eroeffnet
-            pnl = -fee
-
-        if side == 'sell':
-            perf['sell_fills'] += 1
-        else:
-            perf['buy_fills'] += 1
-
-        perf['total_fills'] += 1
-        perf['realized_pnl_usdt'] = round(perf.get('realized_pnl_usdt', 0.0) + pnl, 4)
-        perf['fee_paid_usdt'] = round(perf.get('fee_paid_usdt', 0.0) + fee, 4)
-        perf['last_fill_at'] = fill_time
-
-        del active_orders[price_key]
-
-        # Nachfolge-Order bestimmen:
-        # Opener gefuellt → Closer platzieren (reduceOnly = Position schliessen = TP)
-        # Closer gefuellt → Opener platzieren (neue Position eroeffnen)
-        if is_opener:
-            if side == 'buy':
-                next_price = find_next_sell_level(fill_price, levels)
-                next_side = 'sell'
             else:
-                next_price = find_next_buy_level(fill_price, levels)
-                next_side = 'buy'
-            next_amount = fill_amount
-            next_params = {'reduceOnly': True}
-            next_is_opener = False
-            log.info(f"  Opener gefuellt → platziere Closer {next_side.upper()} @ naechstes Level")
-        else:
-            if side == 'sell':
-                next_price = find_next_buy_level(fill_price, levels)
-                next_side = 'buy'
-            else:
-                next_price = find_next_sell_level(fill_price, levels)
-                next_side = 'sell'
-            next_amount = amount_per_grid
-            next_params = {}
-            next_is_opener = True
-            log.info(f"  Closer gefuellt (TP) → platziere neuen Opener {next_side.upper()} @ naechstes Level")
-
-        if next_price is not None:
-            price_r = exchange.round_price(symbol, next_price)
-            key = str(price_r)
-            if key not in active_orders:
+                # Buy storniert → TP stornieren und neu platzieren
+                if tp_order_id:
+                    exchange.cancel_trigger_order(tp_order_id, symbol)
+                del active_orders[price_key]
                 try:
-                    new_order = exchange.place_limit_order(symbol, next_side, next_amount, price_r, params=next_params, margin_mode=margin_mode)
-                    entry = _order_entry(new_order, next_side, price_r, next_amount, fill_time, next_is_opener)
-                    if not next_is_opener:
-                        entry['paired_open_price'] = fill_price
-                    active_orders[key] = entry
-                    label = 'CLOSER' if not next_is_opener else 'OPENER'
-                    log.info(f"  -> [{label}] {next_side.upper()}-Order @ {price_r:.4f}")
-                except Exception as e:
-                    log.error(f"  {next_side.upper()}-Order @ {price_r} fehlgeschlagen: {e}")
-        else:
-            edge = 'oberen' if (is_opener and side == 'buy') or (not is_opener and side == 'sell') else 'unteren'
-            log.info(f"  Kein naechstes Level (am {edge} Grid-Rand).")
+                    new_order = exchange.place_limit_order(symbol, 'buy', order_info['amount'], order_info['price'], margin_mode=margin_mode)
+                    entry = _order_entry(new_order, 'buy', order_info['price'], order_info['amount'], now, is_opener=True)
+                    next_tp = find_next_sell_level(order_info['price'], levels)
+                    if next_tp is not None:
+                        tp_r = exchange.round_price(symbol, next_tp)
+                        tp_ord = exchange.place_trigger_market_order(symbol, 'sell', order_info['amount'], tp_r, reduce=True)
+                        if tp_ord:
+                            entry['tp_order_id'] = tp_ord['id']
+                            entry['tp_price'] = tp_r
+                    active_orders[str(order_info['price'])] = entry
+                    repaired_orders.append(f"BUY @ {order_info['price']}")
+                    log.info(f"  Stornierte Order repariert: BUY @ {order_info['price']}")
+                except Exception as re:
+                    log.error(f"  Reparatur fehlgeschlagen @ {price_key}: {re}")
 
-        _send_fill_notification(telegram_config, symbol, side, fill_price, fill_amount, pnl, perf)
+        # Fall C: Buy gefuellt, TP noch offen → Position laeuft, nichts zu tun
+        elif not buy_is_open and tp_is_open:
+            log.info(f"  BUY @ {price_key} gefuellt, TP-Trigger laeuft noch — warte.")
+
+        # Fall D: Buy noch offen, TP fehlt → TP neu platzieren
+        elif buy_is_open and not tp_is_open and tp_order_id:
+            tp_price = order_info.get('tp_price')
+            if tp_price:
+                log.warning(f"  TP-Trigger fuer Buy @ {price_key} fehlt — platziere neu @ {tp_price}")
+                tp_ord = exchange.place_trigger_market_order(symbol, 'sell', order_info['amount'], tp_price, reduce=True)
+                if tp_ord:
+                    active_orders[price_key]['tp_order_id'] = tp_ord['id']
 
     tracker['active_orders'] = active_orders
 
